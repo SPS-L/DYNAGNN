@@ -1,10 +1,21 @@
 # DYNAGNN
 
-**DYNamic Activity Graph Neural Networks**
+**DYNamic Activity Graph Neural Networks** — a component of the **AMS (Adaptive Model Selection)** module.
 
-Component dynamic activity prediction from steady-state operating points and events.
+## Context (AMS)
 
-This repository trains those models (`main.py`) and runs inference on new cases (`DYNAGNN.py`). Details: [`docs/`](docs/).
+The wider AMS stack decides how much model fidelity the power-system simulation needs per region and per scenario. DYNAGNN supports that decision by predicting **dynamic activity hotspots** (where high-fidelity dynamics matter vs where simplifications are safe).
+
+## What DYNAGNN does
+
+- **Input**: steady-state operating points + contingencies/events
+- **Output**: per-component dynamic activity predictions (hotspots)
+
+## Main entry points
+
+- **Training**: `main.py`
+- **Inference**: `DYNAGNN.py` (run on new cases)
+- **Docs**: `docs/`
 
 ---
 
