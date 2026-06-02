@@ -1,0 +1,86 @@
+# Configuration for DYNAGNN scripts.
+
+dynagnn:
+  version: 1
+
+dynawo:
+  path: "path to myEnvDynawo.sh"
+
+data:
+  path: "path to data folder"
+
+simulation:
+  event_time: 
+  initialization_duration:  # total Dynawo run time (s) per OP before contingency simulations, to find a steady state solution for the initial operating point
+
+network:
+  country_filter: []
+
+kpi:
+  window_sec: 
+  step_sec: 
+  class_bins:
+    voltage:
+      cuts:
+    spower:
+      cuts:
+
+model:
+  num_classes: 
+
+training:
+  epochs: 
+  patience: 
+  batch_size: 
+  split_mode: 
+  seed: 
+  training: 
+  validation: 
+  testing: 
+  high_class_threshold: 
+
+optuna:
+  n_trials: 
+  hparams:
+    hidden_dim:
+      type: categorical
+      choices: 
+    num_layers:
+      type: int
+      low: 
+      high: 
+    hidden_channels:
+      type: categorical
+      choices: 
+    num_heads:
+      type: categorical
+      choices: 
+    dropout:
+      type: float
+      low: 
+      high: 
+    num_gnn_layers:
+      type: int
+      low: 
+      high: 
+    lr:
+      type: float
+      low: 
+      high: 
+      log: true
+    weight_decay:
+      type: float
+      low: 
+      high: 
+      log: true
+    under_penalty_lambda:
+      type: float
+      low: 
+      high: 
+    coral_prediction_threshold:
+      type: float
+      low: 
+      high: 
+
+inference:
+  initialization_duration:  # total Dynawo run time (s) before constructing the graph, to find a steady state solution for the initial operating point

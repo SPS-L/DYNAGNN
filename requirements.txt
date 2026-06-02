@@ -1,0 +1,24 @@
+# DYNAGNN — pip dependencies (Python 3.10 required; 3.10.15 recommended).
+#
+# Install PyTorch for your device FIRST, then this file.
+# See README.md → Environment setup → Dependencies (pip).
+
+# Core numerics & data
+numpy>=1.24
+pandas>=2.0
+scipy>=1.10
+
+# Plotting (GAT training diagnostics)
+matplotlib>=3.7
+
+# Power grid / IIDM (graph construction, electrical distance)
+pypowsybl>=1.0.0
+
+# ML / GNN (training, inference)
+torch-geometric>=2.4.0
+scikit-learn>=1.3.0
+joblib>=1.3
+optuna>=3.0.0
+
+# Configuration
+pyyaml>=6.0

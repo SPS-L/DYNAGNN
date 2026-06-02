@@ -1,0 +1,151 @@
+Third-Party Software Licenses
+==============================
+
+DYNAGNN is licensed under the **Apache License 2.0** (see [LICENSE](LICENSE)).
+
+DYNAGNN uses the following third-party software. This file lists **direct** Python dependencies and other runtime tools. Transitive dependencies installed by `pip` are not listed individually; regenerate a full report with:
+
+```bash
+pip install -r requirements.txt
+pip install pip-licenses
+pip-licenses --from=requirements.txt --format=markdown --with-urls --with-license-file
+```
+
+---
+
+## Python packages (`requirements.txt`)
+
+numpy
+-----
+Copyright (c) 2005–present, NumPy Developers.
+License: BSD-3-Clause
+https://numpy.org/
+
+matplotlib
+----------
+Copyright (c) 2002–present, Matplotlib Development Team.
+License: PSF-2.0 (Python Software Foundation License)
+https://matplotlib.org/
+
+Pillow
+------
+Copyright (c) 1997–2011 by Secret Labs AB, 1995–2011 by Fredrik Lundh and contributors.
+License: MIT-CMU (Pillow License)
+https://python-pillow.org/
+
+fastdtw
+-------
+Copyright (c) fastdtw contributors.
+License: MIT
+https://github.com/slaypni/fastdtw
+
+pandas
+------
+Copyright (c) 2008–present, AQR Capital Management, Lambda Foundry, and PyData Development Team.
+License: BSD-3-Clause
+https://pandas.pydata.org/
+
+plotly
+------
+Copyright (c) 2016–present, Plotly Technologies Inc.
+License: MIT
+https://plotly.com/python/
+
+PyTorch
+-------
+Copyright (c) PyTorch contributors.
+License: BSD-3-Clause
+https://pytorch.org/
+
+PyTorch Geometric
+-----------------
+Copyright (c) PyTorch Geometric contributors.
+License: MIT
+https://pytorch-geometric.readthedocs.io/
+
+NetworkX
+--------
+Copyright (c) 2004–present, NetworkX Developers.
+License: BSD-3-Clause
+https://networkx.org/
+
+scikit-learn
+------------
+Copyright (c) 2007–present, scikit-learn developers.
+License: BSD-3-Clause
+https://scikit-learn.org/
+
+joblib
+------
+Copyright (c) 2008–2021, joblib developers.
+License: BSD-3-Clause
+https://joblib.readthedocs.io/
+
+Optuna
+------
+Copyright (c) 2018–present, Preferred Networks, Inc. and contributors.
+License: MIT
+https://optuna.org/
+
+tqdm
+----
+Copyright (c) 2013–present, tqdm contributors.
+License: MIT and MPL-2.0 (dual-licensed components; see project repository)
+https://github.com/tqdm/tqdm
+
+PyYAML
+------
+Copyright (c) 2017–2021, Ingy döt Net and PyYAML contributors.
+License: MIT
+https://pyyaml.org/
+
+python-dotenv
+-------------
+Copyright (c) 2013–present, Saurabh Kumar and contributors.
+License: BSD-3-Clause
+https://github.com/theskumar/python-dotenv
+
+dropbox
+-------
+Copyright (c) Dropbox, Inc.
+License: MIT
+https://www.dropbox.com/developers
+
+DeepL Python library
+--------------------
+Copyright (c) DeepL SE and contributors.
+License: MIT
+https://www.deepl.com/pro-api
+
+tikzplotlib
+-----------
+Copyright (c) tikzplotlib contributors.
+License: MIT
+https://github.com/nschloe/tikzplotlib
+
+---
+
+## Additional Python packages (used by the code)
+
+SciPy
+-----
+Copyright (c) 2001–present, SciPy Developers.
+License: BSD-3-Clause
+https://scipy.org/
+
+pypowsybl
+---------
+Copyright (c) RTE and pypowsybl contributors.
+License: MPL-2.0
+https://github.com/powsybl/pypowsybl
+
+---
+
+## External software (not distributed with this repository)
+
+Dynawo
+------
+Copyright and license terms are defined by the Dynawo project and your installation.
+DYNAGNN invokes Dynawo at runtime only (`main.py`, `DYNAGNN.py`); Dynawo is **not** bundled in this repository.
+License: see the `LICENSE` and `COPYING` files in your Dynawo / Dynawo-RTE installation (commonly MPL-2.0 for the open-source project).
+https://github.com/dynawo/dynawo

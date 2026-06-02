@@ -1,0 +1,125 @@
+# =============================================================================
+# DYNAGNN .gitignore
+# =============================================================================
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+*.manifest
+*.spec
+
+# --- Virtual environments ----------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.conda/
+
+# --- Testing / type checking / coverage --------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# --- Jupyter -----------------------------------------------------------------
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- OS / editor -------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+*~
+*.swp
+*.swo
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+.cursor/
+
+# --- Secrets / local env -----------------------------------------------------
+.env
+.env.*
+!.env.example
+secrets.*
+*.pem
+*.key
+!config.yaml
+
+# --- Logs --------------------------------------------------------------------
+*.log
+dynagnn.log
+dynamo.log
+
+# --- PyTorch / ML artifacts --------------------------------------------------
+*.pt
+*.pth
+*.pkl
+*.pickle
+*.sqlite3
+*.db-journal
+
+# --- DYNAGNN pipeline outputs (see modules/paths.py) -------------------------
+# These are written under data.path (config.yaml), often examples/*/data/ or
+# a project-local / external data folder.
+
+**/dynagnn_output/
+**/Simulations_Scenarios/
+**/op_graphs/
+**/op_electric_distance/
+**/generator_Snom/
+**/KPI/
+**/Actions/
+**/Disconnections/
+**/Dataset/
+**/model/
+**/training/
+
+# Optional local data root when data.path points inside the repository
+/data/
+
+# --- Dynawo simulation / initialization artifacts ----------------------------
+**/output/
+**/outputs/
+**/*pre_init.bak
+**/Events.dyd
+**/Events.par
+**/curves.xml
+**/outputiidm.xml
+**/timeline*.xml
+**/constraints.xml
+**/finalState*.iidm
+**/finalState*.xiidm
+
+# Dynawo snapshot / intermediate case folders
+**/snapshots/
+**/snapshot*/
+
+# --- Examples: track case inputs, ignore generated pipeline data -------------
+# Keeps examples/Nordic/data/inputs/ (IIDM, DYD, jobs, contingencies, …)
+examples/**/data/*
+!examples/**/data/inputs/
+!examples/**/data/inputs/**
+
+# Ignore operating-point case folders under examples (can be modified/generated locally)
+!examples/**/data/inputs/operating_point_*/
+
+# Inference outputs inside bundled operating-point folders
+examples/**/inputs/**/dynagnn_output/
