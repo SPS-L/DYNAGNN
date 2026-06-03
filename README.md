@@ -55,11 +55,14 @@ After creating and activating a environment (Option A or B), install packages in
 
 DYNAGNN picks the device automatically: `cuda` (NVIDIA or AMD with ROCm) → `mps` (Apple Silicon) → `cpu`. There is no `device` setting in `config.yaml`; install a PyTorch build that exposes your GPU.
 
+> **Note (macOS + Dynawo Docker):** On Mac, Dynawo is commonly run via [Dynawo Docker](https://dynawo.github.io/install/) because there is no native macOS build. If you use that setup, **MPS is not available** for GAT training (PyTorch runs in the Linux container, where Apple’s MPS backend does not exist). Use the **CPU only** PyTorch install from the table below.
+
 **Step 1 — PyTorch** (minimum **2.0**; choose **one** row; confirm `cu*` / `rocm*` on [pytorch.org/get-started](https://pytorch.org/get-started/locally/)):
 
 | Hardware | Command |
 |----------|---------|
-| **Mac** (Apple Silicon, MPS) | `pip install "torch>=2.0.0"` |
+| **Mac** (Apple Silicon, MPS; native Dynawo / host Python only) | `pip install "torch>=2.0.0"` |
+| **Mac** (Dynawo Docker) | `pip install "torch>=2.0.0" --index-url https://download.pytorch.org/whl/cpu` |
 | **NVIDIA** (Linux / Windows, CUDA) | `pip install "torch>=2.0.0" --index-url https://download.pytorch.org/whl/cu124` |
 | **AMD** (Linux, ROCm) | `pip install "torch>=2.0.0" --index-url https://download.pytorch.org/whl/rocm6.2` |
 | **AMD** (Windows, GPU via WSL2) | Install Ubuntu in **WSL2**, then run the **AMD Linux (ROCm)** command above (ROCm PyTorch is not available on native Windows). |
@@ -79,7 +82,7 @@ pip install -r requirements.txt
 
 If `torch-geometric` fails to install, complete Step 1 first, then see the [PyG installation guide](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html).
 
-**Dynawo** — install per [dynawo.github.io/install](https://dynawo.github.io/install/), then set `dynawo.path` in `config.yaml` to your environment script (`myEnvDynawo.sh` on Linux, or the Windows install folder / launcher from the Dynawo docs).
+**Dynawo** — install per [dynawo.github.io/install](https://dynawo.github.io/install/), then set `dynawo.path` in `config.yaml` to your environment script (`myEnvDynawo.sh` on Linux, or the Windows install folder / launcher from the Dynawo docs). On **macOS**, use **Dynawo Docker** if you do not have a Linux VM; in that case training falls back to **CPU** (see the macOS + Dynawo Docker note above — **MPS cannot be used**).
 
 ---
 
