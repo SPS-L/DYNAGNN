@@ -119,9 +119,8 @@ def compute_coral_pos_weight(train_loader, *, num_classes: int, device: torch.de
         pos += t.sum(dim=0)
         total += int(t.shape[0])
     neg = max(total, 1) - pos
-    pw = (neg / torch.clamp(pos, min=1.0)).float()
-    pw = torch.clamp(pw, min=1.0, max=50.0)
-    return pw.to(device)
+    pos_weight = (neg / torch.clamp(pos, min=1.0)).float()
+    return pos_weight.to(device)
 
 
 def coral_loss(
