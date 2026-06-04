@@ -263,28 +263,17 @@ except ImportError:  # pragma: no cover
 
 
 def make_label(curve_name: str, suffixes: list[str], id_to_staticid: dict[str, str]) -> str:
-    if "_" in curve_name:
-        prefix, remainder = curve_name.split("_", 1)
-        if prefix == "NETWORK":
-            label = remainder
-        elif prefix == "DM":
-            dm_id = curve_name
-            for suffix in suffixes:
-                suffix_token = f"_{suffix}"
-                if dm_id.endswith(suffix_token):
-                    dm_id = dm_id[: -len(suffix_token)]
-                    break
-            label = id_to_staticid.get(dm_id, curve_name)
-        else:
-            label = remainder
-    else:
-        label = curve_name
-
+    label = curve_name
     for suffix in suffixes:
         suffix_token = f"_{suffix}"
         if label.endswith(suffix_token):
             label = label[: -len(suffix_token)]
             break
+
+    if label.startswith("NETWORK_"):
+        label = label[len("NETWORK_") :]
+    else:
+        label = id_to_staticid.get(label, label)
     return label
 
 

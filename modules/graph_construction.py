@@ -37,6 +37,9 @@ EDGE_TYPE_NAMES = {
     EDGE_CONNECTION: "connection",
 }
 
+NODE_BREAKER_TOPOLOGY = "NODE_BREAKER"
+BUS_BREAKER_TOPOLOGY = "BUS_BREAKER"
+
 
 def _parse_float(value, default: float = 0.0) -> float:
     try:
@@ -130,6 +133,52 @@ def _busbar_sections_by_voltage_level(busbar_sections) -> Dict[str, list]:
     for voltage_level_id, group in connected.groupby("voltage_level_id", sort=True):
         out[str(voltage_level_id)] = sorted(group.index.astype(str).tolist())
     return out
+
+
+def _computed_bus_to_iidm_bus_map(network) -> Dict[str, list]:
+    """Map pypowsybl internal bus IDs to IIDM bus-breaker bus IDs."""
+    try:
+        bus_breaker_buses = network.get_bus_breaker_view_buses()
+    except Exception:
+        return {}
+    if bus_breaker_buses is None or bus_breaker_buses.empty or "bus_id" not in bus_breaker_buses.columns:
+        return {}
+
+    out: Dict[str, list] = {}
+    for iidm_bus_id, row in bus_breaker_buses.iterrows():
+        computed_bus_id = row.get("bus_id")
+        if computed_bus_id is not None and str(computed_bus_id) != "nan":
+            out.setdefault(str(computed_bus_id), []).append(str(iidm_bus_id))
+    return out
+
+
+def _voltage_level_topology_kind(voltage_levels, voltage_level_id: str) -> str:
+    if voltage_level_id and voltage_level_id in voltage_levels.index:
+        row = voltage_levels.loc[voltage_level_id]
+        for col in ("topology_kind", "topologyKind"):
+            if col in row.index:
+                value = str(row.get(col) or "").strip().upper()
+                if value:
+                    return value
+    return NODE_BREAKER_TOPOLOGY
+
+
+def _bus_ids_by_voltage_level(buses, voltage_levels, internal_to_iidm_bus: Dict[str, list]) -> Dict[str, list]:
+    """Return IIDM bus ids grouped by bus-breaker voltage level."""
+    if buses.empty:
+        return {}
+
+    out: Dict[str, list] = {}
+    for internal_bus_id, row in buses.iterrows():
+        voltage_level_id = row.get("voltage_level_id")
+        if voltage_level_id is None or str(voltage_level_id) == "nan":
+            continue
+        voltage_level_id = str(voltage_level_id)
+        if _voltage_level_topology_kind(voltage_levels, voltage_level_id) != BUS_BREAKER_TOPOLOGY:
+            continue
+        iidm_bus_ids = internal_to_iidm_bus.get(str(internal_bus_id), [str(internal_bus_id)])
+        out.setdefault(voltage_level_id, []).extend(iidm_bus_ids)
+    return {voltage_level_id: sorted(set(bus_ids)) for voltage_level_id, bus_ids in out.items()}
 
 
 def _substation_country(substations, substation_id: str):
@@ -311,7 +360,9 @@ def build_graph(
       (``connected_component == 0`` and ``v_mag != 0``);
     - one graph ``bus`` node is created per active voltage level;
     - ``network.get_busbar_sections()`` maps connected busbar-section ids to
-      the voltage-level node metadata;
+      node-breaker voltage-level node metadata;
+    - ``network.get_buses()`` maps active IIDM bus ids to bus-breaker
+      voltage-level node metadata;
     - generators/loads come from pypowsybl tables and are kept only when
       ``connected == True`` and their voltage level is active;
     - lines and transformers are kept only when both sides are connected and
@@ -328,7 +379,7 @@ def build_graph(
     network = pp.network.load(str(iidm_path))
 
     buses = network.get_buses()
-    voltage_levels = network.get_voltage_levels()
+    voltage_levels = network.get_voltage_levels(all_attributes=True)
     busbar_sections = network.get_busbar_sections()
     substations = network.get_substations()
     generators = network.get_generators()
@@ -338,6 +389,7 @@ def build_graph(
     transformers_3w = network.get_3_windings_transformers()
 
     busbar_ids_by_voltage_level = _busbar_sections_by_voltage_level(busbar_sections)
+    internal_to_iidm_bus = _computed_bus_to_iidm_bus_map(network)
 
     kept_powsybl_buses = buses[
         (buses["connected_component"] == 0)
@@ -346,6 +398,7 @@ def build_graph(
     kept_bus_ids = set(kept_powsybl_buses.index.astype(str))
 
     active_voltage_levels = set(kept_powsybl_buses["voltage_level_id"].dropna().astype(str))
+    bus_ids_by_voltage_level = _bus_ids_by_voltage_level(kept_powsybl_buses, voltage_levels, internal_to_iidm_bus)
     voltage_level_values = {}
     for voltage_level_id, group in kept_powsybl_buses.groupby("voltage_level_id", sort=True):
         voltage_level_values[str(voltage_level_id)] = {
@@ -368,15 +421,21 @@ def build_graph(
                 angle=_parse_float(values["angle"]),
             )
         )
-        node_metadata[voltage_level_id] = {
+        topology_kind = _voltage_level_topology_kind(voltage_levels, voltage_level_id)
+        metadata = {
             "index": idx,
             "type": "bus",
             "id": voltage_level_id,
             "voltageLevelId": voltage_level_id,
             "substationId": substation_id,
             "country": _substation_country(substations, substation_id),
-            "busbarSectionIds": list(busbar_ids_by_voltage_level.get(voltage_level_id, [])),
+            "topologyKind": topology_kind,
         }
+        if topology_kind == NODE_BREAKER_TOPOLOGY:
+            metadata["busbarSectionIds"] = list(busbar_ids_by_voltage_level.get(voltage_level_id, []))
+        elif topology_kind == BUS_BREAKER_TOPOLOGY:
+            metadata["busIds"] = list(bus_ids_by_voltage_level.get(voltage_level_id, []))
+        node_metadata[voltage_level_id] = metadata
         voltage_level_node_index[voltage_level_id] = idx
 
     edge_index = []

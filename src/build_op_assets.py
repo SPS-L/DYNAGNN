@@ -108,7 +108,14 @@ def main() -> None:
     parser.add_argument(
         "--show-examples",
         action="store_true",
+        default=True,
         help="Print one example node/edge metadata record per type.",
+    )
+    parser.add_argument(
+        "--no-show-examples",
+        dest="show_examples",
+        action="store_false",
+        help="Do not print example node/edge metadata records.",
     )
     args = parser.parse_args()
 

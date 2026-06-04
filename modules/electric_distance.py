@@ -161,7 +161,7 @@ def _invert_reduced_y(y_red: csc_matrix) -> np.ndarray:
         # Small islands: dense LAPACK zgesv on Y_red is faster than sparse LU setup.
         y_dense = y_red.toarray()
         rhs = np.eye(n, dtype=np.complex128)
-        return dense_solve(y_dense, rhs, assume_a="non-sym")
+        return dense_solve(y_dense, rhs, assume_a="gen")
 
     lu = splu(y_red, permc_spec="COLAMD")
     # Fortran-order RHS helps threaded BLAS in SuperLU's triangular solves.
