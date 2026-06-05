@@ -137,10 +137,16 @@ def _build_event_lookup(metadata: dict) -> dict:
         _register(node_id, "node", node_idx)
         for bus_id in (node_meta.get("busbarSectionIds", []) or []):
             _register(bus_id, "node", node_idx)
+        for bus_id in (node_meta.get("busIds", []) or []):
+            _register(bus_id, "node", node_idx)
 
     for edge_idx, edge_meta in enumerate(metadata.get("edge_metadata", []) or []):
         edge_id = str(edge_meta.get("id", "")).strip()
         _register(edge_id, "edge", edge_idx)
+        for key in ("bus1", "bus2"):
+            bus_id = edge_meta.get(key)
+            if bus_id:
+                _register(bus_id, "edge", edge_idx)
 
     return {"exact": exact, "canonical": canonical}
 
