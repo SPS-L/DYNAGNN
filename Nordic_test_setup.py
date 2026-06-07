@@ -48,6 +48,8 @@ training:
   validation: 0.1
   testing: 0.1
   high_class_threshold: null
+  selection_f1_weight: 0.5
+  selection_loss_weight: 0.1
 
 optuna:
   n_trials: 5

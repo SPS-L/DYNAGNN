@@ -10,18 +10,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-import matplotlib
-
-matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt
 import numpy as np
 import optuna
 import torch
+from torch_geometric.loader import DataLoader
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch_geometric.nn import GATv2Conv
+
+from modules.gat_training_exports import (
+    composite_selection_score,
+    evaluate_detailed,
+    export_optuna_trials_csv,
+    log_detailed_metrics,
+    plot_distance_histogram,
+    plot_loss_curves,
+    plot_pred_true_examples,
+    resolve_selection_weights,
+)
 
 
 @dataclass(frozen=True)
@@ -273,11 +280,20 @@ def run_gat_voltage_training(
     if "num_classes" not in model_cfg:
         raise KeyError("Missing required config key: model.num_classes (in config.yaml)")
     num_classes = int(model_cfg["num_classes"])
-    epochs = int((config.get("training", {}) or {}).get("epochs", 100))
-    patience = int((config.get("training", {}) or {}).get("patience", 10))
-    seed = int((config.get("training", {}) or {}).get("seed", 42))
+    training_cfg = config.get("training", {}) or {}
+    epochs = int(training_cfg.get("epochs", 100))
+    patience = int(training_cfg.get("patience", 10))
+    seed = int(training_cfg.get("seed", 42))
+    selection_f1_weight, selection_loss_weight = resolve_selection_weights(config)
+    logger.info(
+        "Voltage selection score: high_recall + %.2f*high_f1 - %.2f*loss",
+        selection_f1_weight,
+        selection_loss_weight,
+    )
 
-    ckpt_dir = _checkpoint_dir(training_dir)
+    task_dir = training_dir / "voltage"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_dir = _checkpoint_dir(task_dir)
     last_ckpt = ckpt_dir / "gat_voltage_last.pt"
     best_ckpt = ckpt_dir / "gat_voltage_best.pt"
 
@@ -286,7 +302,7 @@ def run_gat_voltage_training(
     n_trials = int(optuna_cfg.get("n_trials", 15))
     hparam_space = (optuna_cfg.get("hparams", {}) or {})
     study_name = "gat_voltage"
-    storage = f"sqlite:///{(training_dir / 'optuna_gat_voltage.sqlite3').as_posix()}"
+    storage = f"sqlite:///{(task_dir / 'optuna_gat_voltage.sqlite3').as_posix()}"
 
     sample_graph = next(iter(train_loader))
     in_channels = int(sample_graph.x.shape[1])
@@ -295,6 +311,12 @@ def run_gat_voltage_training(
 
     pos_weight = _compute_pos_weight_voltage(train_loader, device=device, num_classes=num_classes)
     logger.info("Voltage pos_weight: %s", pos_weight.detach().cpu().numpy().tolist())
+
+    def _forward(model_obj, data):
+        return model_obj(data.x, data.edge_index, data.edge_attr, data.bus_node_mask)
+
+    def _labels(data):
+        return data.y_class[data.bus_node_mask]
 
     def objective(trial: optuna.Trial) -> float:
         hp = _sample_hparams(trial, hparam_space)
@@ -311,15 +333,18 @@ def run_gat_voltage_training(
         ).to(device)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=hp.lr, weight_decay=hp.weight_decay)
-        scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3, min_lr=1e-6)
+        scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=3, min_lr=1e-6)
 
-        # Full training inside Optuna: scheduler + early stopping (patience)
+        # Full training inside Optuna: composite-score checkpoint + early stopping
         trial_ckpt_best = ckpt_dir / f"gat_voltage_optuna_trial_{trial.number}_best.pt"
         trial_ckpt_last = ckpt_dir / f"gat_voltage_optuna_trial_{trial.number}_last.pt"
 
-        best_val = float("inf")
+        best_score = -float("inf")
+        best_val_loss = float("inf")
         best_epoch = -1
         epochs_no_improve = 0
+        train_history: list[float] = []
+        val_history: list[float] = []
 
         for epoch in range(epochs):
             train_m = run_epoch(
@@ -333,19 +358,30 @@ def run_gat_voltage_training(
                 under_penalty_lambda=hp.under_penalty_lambda,
                 high_class_threshold=high_class_threshold,
             )
-            val_m = run_epoch(
+            val_m = evaluate_detailed(
                 model=model,
                 loader=val_loader,
                 optimizer=None,
-                decode_threshold=hp.coral_prediction_threshold,
                 device=device,
                 num_classes=num_classes,
+                decode_threshold=hp.coral_prediction_threshold,
+                forward_fn=_forward,
+                get_labels_fn=_labels,
+                coral_loss_fn=coral_loss,
+                predict_fn=coral_predict,
                 pos_weight=pos_weight,
                 under_penalty_lambda=hp.under_penalty_lambda,
                 high_class_threshold=high_class_threshold,
             )
             val_loss = float(val_m["loss"])
-            scheduler.step(val_loss)
+            score = composite_selection_score(
+                val_m,
+                f1_weight=selection_f1_weight,
+                loss_weight=selection_loss_weight,
+            )
+            train_history.append(float(train_m["loss"]))
+            val_history.append(val_loss)
+            scheduler.step(score)
 
             payload = {
                 "trial": trial.number,
@@ -353,45 +389,67 @@ def run_gat_voltage_training(
                 "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(),
-                "best_val": best_val,
+                "best_score": best_score,
+                "best_val_loss": best_val_loss,
                 "best_epoch": best_epoch,
                 "hparams": hp.__dict__,
                 "study": study_name,
             }
             _save_ckpt(trial_ckpt_last, payload)
 
-            if val_loss < best_val:
-                best_val = val_loss
+            if score > best_score:
+                best_score = score
+                best_val_loss = val_loss
                 best_epoch = epoch
                 epochs_no_improve = 0
-                payload["best_val"] = best_val
+                payload["best_score"] = best_score
+                payload["best_val_loss"] = best_val_loss
                 payload["best_epoch"] = best_epoch
                 _save_ckpt(trial_ckpt_best, payload)
                 trial.set_user_attr("best_checkpoint", str(trial_ckpt_best))
                 trial.set_user_attr("best_epoch", int(best_epoch))
+                trial.set_user_attr("best_score", float(best_score))
+                trial.set_user_attr("best_val_loss", float(best_val_loss))
             else:
                 epochs_no_improve += 1
 
-            # prune support (optional)
-            trial.report(best_val, step=epoch)
+            trial.report(best_score, step=epoch)
             if trial.should_prune():
                 raise optuna.TrialPruned()
 
             if epochs_no_improve >= patience:
                 break
 
-        return float(best_val)
+        trial.set_user_attr("train_history", train_history)
+        trial.set_user_attr("val_history", val_history)
+        return float(best_score)
 
     sampler = optuna.samplers.TPESampler(seed=seed)
     study = optuna.create_study(
-        direction="minimize",
+        direction="maximize",
         sampler=sampler,
         study_name=study_name,
         storage=storage,
         load_if_exists=True,
     )
-    logger.info("Voltage Optuna study: %s (storage=%s) n_trials=%d", study_name, storage, n_trials)
+    logger.info(
+        "Voltage Optuna study: %s (storage=%s) n_trials=%d objective=max composite score",
+        study_name,
+        storage,
+        n_trials,
+    )
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    logger.info(
+        "Voltage best trial #%d score=%.6f val_loss=%.6f epoch=%s",
+        study.best_trial.number,
+        float(study.best_value),
+        float(study.best_trial.user_attrs.get("best_val_loss", float("nan"))),
+        study.best_trial.user_attrs.get("best_epoch"),
+    )
+
+    optuna_csv = task_dir / "optuna_trials.csv"
+    export_optuna_trials_csv(study, optuna_csv)
+    logger.info("Voltage Optuna trials saved: %s", optuna_csv)
 
     best_params = dict(study.best_trial.params)
     best_params["high_class_threshold"] = high_class_threshold
@@ -441,45 +499,51 @@ def run_gat_voltage_training(
     torch.save(model.state_dict(), best_model_path)
     logger.info("Voltage best model saved: %s", best_model_path)
 
-    # Testing + plots
-    test_m = run_epoch(
+    decode_threshold = float(best["hparams"]["coral_prediction_threshold"])
+    under_penalty = float(best["hparams"]["under_penalty_lambda"])
+
+    train_history = list(study.best_trial.user_attrs.get("train_history", []))
+    val_history = list(study.best_trial.user_attrs.get("val_history", []))
+    loss_curve_path = task_dir / "loss_curves.png"
+    plot_loss_curves(train_history, val_history, loss_curve_path, title="CORAL loss")
+    logger.info("Saved plot: %s", loss_curve_path)
+
+    logger.info("Voltage test metrics:")
+    test_m = evaluate_detailed(
         model=model,
         loader=test_loader,
         optimizer=None,
-        decode_threshold=float(best["hparams"]["coral_prediction_threshold"]),
         device=device,
         num_classes=num_classes,
+        decode_threshold=decode_threshold,
+        forward_fn=_forward,
+        get_labels_fn=_labels,
+        coral_loss_fn=coral_loss,
+        predict_fn=coral_predict,
         pos_weight=pos_weight,
-        under_penalty_lambda=float(best["hparams"]["under_penalty_lambda"]),
+        under_penalty_lambda=under_penalty,
         high_class_threshold=high_class_threshold,
     )
-    logger.info("Voltage test metrics: %s", test_m)
+    log_detailed_metrics(logger, test_m, label="test", num_classes=num_classes)
 
-    # Plot 1: pred-true histogram (distance)
-    diffs = []
-    model.eval()
-    with torch.no_grad():
-        for data in test_loader:
-            data = data.to(device)
-            logits = model(data.x, data.edge_index, data.edge_attr, data.bus_node_mask)
-            y = data.y_class[data.bus_node_mask].long().to(device)
-            pred = coral_predict(logits, threshold=float(best["hparams"]["coral_prediction_threshold"]))
-            diffs.append((pred - y).detach().cpu().numpy())
-    diffs = np.concatenate(diffs, axis=0) if diffs else np.array([], dtype=np.int64)
+    hist_path = task_dir / "test_distance_hist.png"
+    plot_distance_histogram(test_m, num_classes, hist_path)
+    logger.info("Saved plot: %s", hist_path)
 
-    if diffs.size:
-        vals, counts = np.unique(diffs, return_counts=True)
-        pct = 100.0 * counts / counts.sum()
-        plt.figure(figsize=(10, 4.5))
-        plt.bar(vals.astype(int), pct, width=0.9)
-        plt.xlabel("Pred - True (distance)")
-        plt.ylabel("Percent of test predictions (%)")
-        plt.title("Voltage: test distance histogram (pred - true)")
-        plt.grid(axis="y", alpha=0.25)
-        plt.tight_layout()
-        out = training_dir / "gat_voltage_test_distance_hist.png"
-        plt.savefig(out, dpi=200)
-        plt.close()
-        logger.info("Saved plot: %s", out)
+    examples_loader = DataLoader(test_loader.dataset, batch_size=1, shuffle=False)
+    plot_pred_true_examples(
+        model=model,
+        loader=examples_loader,
+        device=device,
+        decode_threshold=decode_threshold,
+        forward_fn=_forward,
+        get_labels_fn=_labels,
+        predict_fn=coral_predict,
+        num_classes=num_classes,
+        output_dir=task_dir / "pred_true_examples",
+        logger=logger,
+        max_examples=5,
+        target_class=num_classes - 1,
+    )
 
 

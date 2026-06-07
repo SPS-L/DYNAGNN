@@ -85,6 +85,8 @@ Example (for **bus**, use **Type** `bus` in both cases; **Fault name** is a `bus
 | | `validation` | float | Validation fraction or OP count |
 | | `testing` | float | Test fraction or OP count |
 | | `high_class_threshold` | integer or `null` | Weighted sampling threshold; `null` = off |
+| | `selection_f1_weight` | float (**required**) | Weight on `high_f1` in checkpoint / Optuna composite score |
+| | `selection_loss_weight` | float (**required**) | Weight on `loss` (subtracted) in composite score |
 | **optuna** | `n_trials` | integer | Hyperparameter trials |
 | | `hparams.*` | see `config.yaml` | Optuna search spaces (`categorical`, `int`, `float`) |
 | **inference** | `initialization_duration` | float (s), or `0` / omit | Steady-state run for `DYNAGNN.py` |
@@ -163,6 +165,8 @@ training:
   validation: 0.1
   testing: 0.1
   high_class_threshold: null
+  selection_f1_weight: 0.5
+  selection_loss_weight: 0.1
 
 optuna:
   n_trials: 5

@@ -38,6 +38,8 @@ training:
   validation: 
   testing: 
   high_class_threshold: 
+  selection_f1_weight:     # composite score: high_recall + w*f1 - w*loss
+  selection_loss_weight: 
 
 optuna:
   n_trials: 
