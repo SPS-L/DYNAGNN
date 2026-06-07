@@ -84,7 +84,7 @@ Example (for **bus**, use **Type** `bus` in both cases; **Fault name** is a `bus
 | | `training` | float | Train fraction or OP count |
 | | `validation` | float | Validation fraction or OP count |
 | | `testing` | float | Test fraction or OP count |
-| | `high_class_threshold` | integer or `null` | Weighted sampling threshold; `null` = off |
+| | `high_class_threshold` | integer or `null` | Minimum class for **high** severity (sampling, under-penalty, composite score); `null` = top class only for metrics, no weighted sampling |
 | | `selection_f1_weight` | float (**required**) | Weight on `high_f1` in checkpoint / Optuna composite score |
 | | `selection_loss_weight` | float (**required**) | Weight on `loss` (subtracted) in composite score |
 | **optuna** | `n_trials` | integer | Hyperparameter trials |
@@ -164,7 +164,7 @@ training:
   training: 0.8
   validation: 0.1
   testing: 0.1
-  high_class_threshold: null
+  high_class_threshold: 2  # classes >= 2 (2 and 3) are "high" with num_classes: 4
   selection_f1_weight: 0.5
   selection_loss_weight: 0.1
 
@@ -214,4 +214,6 @@ optuna:
 inference:
   initialization_duration: 10.0  # steady-state run before graph build; use 0 to skip
 ```
+
+With `model.num_classes: 4` (classes 0–3), `high_class_threshold: 2` treats classes **2 and 3** as high severity. That enables weighted train sampling and the CORAL under-penalty (when Optuna picks `under_penalty_lambda > 0`), and sets the cutoff for `high_recall` / `high_f1` in the validation composite score. See [`src/training.md`](src/training.md) for details.
 

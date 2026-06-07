@@ -36,4 +36,4 @@ Dynawo **contingency simulation** driver: optional OP initialization, curve expo
 
 ## Related modules
 
-- [`event_files`](../modules/event_files.md), [`initialization`](../modules/initialization.md), [`dynawo_runner`](../modules/dynawo_runner.md), [`curve_generation`](../modules/curve_generation.md)
+- [`event_files`](../modules/event_files.md), [`initialization`](../modules/initialization.md), [`dynawo_runner`](../modules/dynawo_runner.md), [`curve_generation`](../modules/curve_generation.md), [`simulation_results`](../modules/simulation_results.md)

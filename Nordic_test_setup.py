@@ -47,7 +47,7 @@ training:
   training: 0.8
   validation: 0.1
   testing: 0.1
-  high_class_threshold: null
+  high_class_threshold: 2  # classes >= 2 (2 and 3) are "high" with num_classes: 4
   selection_f1_weight: 0.5
   selection_loss_weight: 0.1
 
