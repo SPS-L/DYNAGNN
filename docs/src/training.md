@@ -34,10 +34,25 @@ End-to-end **GAT training**: build a shared PyG dataset (voltage + spower labels
 ## Flow (summary)
 
 1. Ensure train/val/test split CSV exists (`dataset_split`).
-2. Build shared `graph_dataset` with `y_voltage` and `y_spower` masks.
+2. Build shared `graph_dataset` with `y_voltage` and `y_spower` masks; resolve each row’s **Contingency** (column 2) on the graph and set `fault_on` (see [Event lookup](#event-lookup-and-fault_on-placement)).
 3. Append log electrical distance from fault to each node.
 4. Fit scalers on train split; build weighted loaders if `high_class_threshold` is set.
 5. `run_gat_voltage_training()` then `run_gat_spower_training()` (Optuna maximizes validation composite score `high_recall + selection_f1_weight·high_f1 − selection_loss_weight·loss`).
+
+## Event lookup and `fault_on` placement
+
+For each **Contingency** (dataset column 2), `_find_event_location` resolves a graph location and sets `fault_on = 1.0`. Inference uses the same rules — see [`inference.md`](inference.md#event-lookup-and-fault_on-placement).
+
+| Event id matches | Location | `fault_on` set on |
+|----------------|----------|-------------------|
+| Node `id` (voltage level) | node | `data.x[..., fault_on]` |
+| `busbarSectionIds` entry (NODE_BREAKER) | node | `data.x[..., fault_on]` |
+| `busIds` entry (BUS_BREAKER) | node | `data.x[..., fault_on]` |
+| Edge `id` (line, transformer, HVDC, connection, …) | edge | `data.edge_attr[..., fault_on]` on **both** directed half-edges |
+
+Edge endpoint fields (`bus1`, `bus2` in edge metadata) are **not** used for event resolution — only equipment **edge `id`**.
+
+Ids are matched exactly when possible, then via canonical normalization and safe substring fallbacks.
 
 ### Training selection score
 

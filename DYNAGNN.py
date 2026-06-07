@@ -112,6 +112,8 @@ def _build_event_lookup(metadata: dict) -> dict:
         _register(node_id, "node", node_idx)
         for bus_id in (node_meta.get("busbarSectionIds", []) or []):
             _register(bus_id, "node", node_idx)
+        for bus_id in (node_meta.get("busIds", []) or []):
+            _register(bus_id, "node", node_idx)
 
     for edge_idx, edge_meta in enumerate(metadata.get("edge_metadata", []) or []):
         edge_id = str(edge_meta.get("id", "")).strip()
