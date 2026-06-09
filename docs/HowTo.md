@@ -93,6 +93,51 @@ Example (for **bus**, use **Type** `bus` in both cases; **Fault name** is a `bus
 
 ---
 
+## Resuming the pipeline (`--from-step`)
+
+`main.py` runs five stages in order:
+
+1. **`simulate`** — optional per-OP **initialization**, curve export setup, and Dynawo **contingency runs** (`src/simulate.py`)
+2. **`build_op_assets`** — graphs, electrical distance, generator SNom (`src/build_op_assets.py`)
+3. **`curve_process`** — KPI tables and action/disconnection flags (`src/curves_post_process.py`)
+4. **`dataset`** — merged datasets and class labels (`src/dataset_construction.py`)
+5. **`training`** — GAT training and model export (`src/training.py`)
+
+Omit `--from-step` to run the **full pipeline** (including initialization and contingency simulations). To **rerun from a later stage** (for example after fixing config or code downstream of simulations), pass `--from-step`:
+
+```bash
+# Full run (default)
+python3 main.py
+
+# Skip initialization and contingency simulations; rebuild graph assets and continue
+python3 main.py --from-step build_op_assets
+
+# Skip simulations and graph assets; start at curve/KPI post-processing
+python3 main.py --from-step curve_process
+
+# Rebuild datasets only (KPI/Actions/Disconnections must already exist)
+python3 main.py --from-step dataset
+
+# Retrain models only (dataset CSVs and graph assets must already exist)
+python3 main.py --from-step training
+```
+
+**Prerequisites:** each start point assumes the **outputs of all earlier stages** are already present under `<data.path>/`. If required files are missing, the step will fail.
+
+| `--from-step` | Skips | You must already have |
+|---------------|-------|------------------------|
+| *(omit — full run)* | — | `inputs/` cases and `contingencies.csv` |
+| `build_op_assets` | `simulate` (initialization + contingency runs) | `inputs/operating_point_*` (IIDM, `.dyd`, …) |
+| `curve_process` | `simulate` (initialization + contingency runs), `build_op_assets` | `Simulations_Scenarios/` with Dynawo `outputs/curves/`, `generator_Snom/`, `inputs/contingencies.csv` |
+| `dataset` | through `curve_process` | `KPI/`, `Actions/`, `Disconnections/`, `op_graphs/` |
+| `training` | through `dataset` | `Dataset/Dataset_Voltage.csv`, `Dataset_Spower.csv`, `op_graphs/`, `op_electric_distance/` |
+
+See the per-stage input tables in [`src/simulate.md`](src/simulate.md), [`src/build_op_assets.md`](src/build_op_assets.md), [`src/curves_post_process.md`](src/curves_post_process.md), [`src/dataset_construction.md`](src/dataset_construction.md), and [`src/training.md`](src/training.md).
+
+Each `main.py` run still recreates `<data.path>/dynagnn.log` from scratch.
+
+---
+
 ## Nordic example details
 
 ### Operating points in the Nordic example

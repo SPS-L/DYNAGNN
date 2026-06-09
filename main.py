@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
+from typing import Callable
 
 try:
     import yaml
@@ -18,12 +20,43 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from modules.dynawo_runner import write_simulation_log_header
 from modules.paths import CONFIG_PATH, DATA_DIR
-from modules.pipeline_logging import configure_pipeline_logging, get_logger, get_pipeline_log_path, log_step_banner
+from modules.pipeline_logging import configure_pipeline_logging, get_logger, get_pipeline_log_path
 from src import build_op_assets, curves_post_process, dataset_construction, simulate, training
 
 MODEL_DIR = DATA_DIR / "model"
 VOLTAGE_MODEL = MODEL_DIR / "gat_voltage_best_model.pt"
 SPOWER_MODEL = MODEL_DIR / "gat_spower_best_model.pt"
+
+PIPELINE_STEPS: tuple[tuple[str, Callable[[], None]], ...] = (
+    ("simulate", simulate.main),
+    ("build_op_assets", build_op_assets.main),
+    ("curve_process", curves_post_process.main),
+    ("dataset", dataset_construction.main),
+    ("training", training.main),
+)
+
+FROM_STEP_INDEX = {name: index for index, (name, _) in enumerate(PIPELINE_STEPS)}
+RESUME_FROM_STEP_CHOICES = tuple(name for name, _ in PIPELINE_STEPS[1:])
+
+
+def _parse_args() -> argparse.Namespace:
+    step_names = ", ".join(name for name, _ in PIPELINE_STEPS)
+    parser = argparse.ArgumentParser(
+        description="Run the DYNAGNN training pipeline end to end or resume from a later stage.",
+    )
+    parser.add_argument(
+        "--from-step",
+        choices=RESUME_FROM_STEP_CHOICES,
+        default=None,
+        metavar="STEP",
+        help=(
+            "Resume from this stage instead of running the full pipeline. "
+            f"Stages in order: {step_names}. "
+            "Choices: build_op_assets, curve_process, dataset, training "
+            "(requires outputs from earlier stages; see docs/HowTo.md)."
+        ),
+    )
+    return parser.parse_args()
 
 
 def _dynagnn_version() -> str:
@@ -36,6 +69,9 @@ def _dynagnn_version() -> str:
 
 
 def main() -> None:
+    args = _parse_args()
+    start_index = 0 if args.from_step is None else FROM_STEP_INDEX[args.from_step]
+
     log_path = DATA_DIR / "dynagnn.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     if log_path.exists():
@@ -46,17 +82,12 @@ def main() -> None:
     logger = get_logger()
 
     logger.info("DYNAGNN pipeline started.")
+    if start_index > 0:
+        skipped = ", ".join(name for name, _ in PIPELINE_STEPS[:start_index])
+        logger.info("Resuming from step %s (skipping: %s).", args.from_step, skipped)
     logger.info("Expected outputs when complete: %s, %s", VOLTAGE_MODEL, SPOWER_MODEL)
 
-    steps = (
-        simulate.main,
-        build_op_assets.main,
-        curves_post_process.main,
-        dataset_construction.main,
-        training.main,
-    )
-
-    for step in steps:
+    for _, step in PIPELINE_STEPS[start_index:]:
         step()
 
     if not VOLTAGE_MODEL.is_file() or not SPOWER_MODEL.is_file():
