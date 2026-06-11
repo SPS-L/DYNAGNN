@@ -142,18 +142,20 @@ Each `main.py` run still recreates `<data.path>/dynagnn.log` from scratch.
 
 ### Operating points in the Nordic example
 
-| Operating point | Description |
-|----------------|-------------|
-| **1** | Original (from Dynawo `DynaWaltz` repo) |
-| **2** | 10% decrease |
-| **3** | 20% decrease |
-| **4** | 30% decrease |
-| **5** | 35% decrease |
-| **6** | 40% decrease |
-| **7** | 50% decrease |
-| **8** | 55% decrease |
-| **9** | 60% decrease |
-| **10** | 70% decrease |
+| Operating point | Description | Total generator Power (MW) |
+|----------------|-------------|-----------------------------|
+| **1** | Original (from Dynawo `DynaWaltz` repo) | 11506.0 |
+| **2** | 10% decrease | 10398.3 |
+| **3** | 20% decrease | 9359.5 |
+| **4** | 30% decrease | 8309.6 |
+| **5** | 35% decrease | 7783.4 |
+| **6** | 40% decrease | 7241.1 |
+| **7** | 50% decrease | 6169.1 |
+| **8** | 55% decrease | 5658.8 |
+| **9** | 60% decrease | 5207.7 |
+| **10** | 70% decrease | 4609.8 |
+
+Operating point **1** is the unmodified Nordic case from the Dynawo `DynaWaltz` repository. Points **2–10** were produced with **Dynawo load-area variation** events run as **dynamic simulations**: a ramped load reduction was applied to **all loads**, and the percentage in the table is the **reduction per load** (e.g. 10% decrease → each load ends at **90%** of its initial value). Generators rebalanced through **primary frequency control** during those runs.
 
 ### Nordic smoke-test `config.yaml` (written by `Nordic_test_setup.py`)
 
