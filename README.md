@@ -2,10 +2,10 @@
   <img src="assets/DYNAGNN_logo.png" alt="DYNAGNN — Powering Grids with Graph Intelligence" width="350">
 </p>
 <p align="center">
-  <img src="assets/logo_HD.png" alt="Cyprus University of Technology and project partners" height="50">
-  <img src="assets/CRESYM.png" alt="CRESYM" height="90">
+  <img src="assets/logo_HD.png" alt="Cyprus University of Technology and project partners" height="80">
+  <img src="assets/CRESYM.png" alt="CRESYM" height="110">
   &nbsp;&nbsp;&nbsp;
-  <img src="assets/RTE_logo.png" alt="RTE" height="90">
+  <img src="assets/RTE_logo.png" alt="RTE" height="110">
 </p>
 
 **DYNamic Activity Graph Neural Networks** — a component of the **AMS (Adaptive Model Selection)** module.
