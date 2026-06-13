@@ -17,12 +17,22 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from modules import dataset_split
+from modules.normalization import (
+    build_class_dataset_for_type,
+    kpi_class_counts,
+    load_split_lookup,
+    plot_voltage_spower_distribution,
+    quantile_cuts_from_config,
+    save_normalization_report,
+)
 from modules.paths import (
     ACTIONS_DIR,
     CONFIG_PATH,
     DATASET_DIR,
     DISCONNECTIONS_DIR,
     KPI_DIR,
+    NORMALIZATION_DIR,
     OP_GRAPHS_DIR,
 )
 from modules.pipeline_logging import get_logger, log_step_banner
@@ -207,20 +217,6 @@ def write_table(df: Optional[pd.DataFrame], output_path: Path) -> Optional[Path]
     return output_path
 
 
-def read_normalization_bounds(path: Optional[Path]) -> dict[str, tuple[float, float]]:
-    if path is None or not path.exists():
-        return {}
-    df = pd.read_csv(path)
-    out: dict[str, tuple[float, float]] = {}
-    for _, row in df.iterrows():
-        file_name = str(row.get("File", "")).strip()
-        lo = pd.to_numeric(row.get("GlobalMinUsed"), errors="coerce")
-        hi = pd.to_numeric(row.get("GlobalMaxUsed"), errors="coerce")
-        if file_name and pd.notna(lo) and pd.notna(hi):
-            out[file_name] = (float(lo), float(hi))
-    return out
-
-
 def apply_flag_mask_to_kpi(kpi_df: Optional[pd.DataFrame], flags_df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     if kpi_df is None or flags_df is None:
         return kpi_df
@@ -260,168 +256,9 @@ def apply_flag_mask_to_kpi(kpi_df: Optional[pd.DataFrame], flags_df: Optional[pd
     return out
 
 
-def normalize_table(
-    df: Optional[pd.DataFrame],
-    file_name: str,
-    *,
-    reused_bounds: dict[str, tuple[float, float]],
-    target_min: float = 0.0,
-    target_max: float = 1.0,
-    fixed_min: Optional[float] = None,
-    fixed_max: Optional[float] = None,
-) -> tuple[Optional[pd.DataFrame], Optional[float], Optional[float], str]:
-    if df is None:
-        return None, None, None, "missing"
-    if target_max < target_min:
-        raise ValueError("target_max must be >= target_min")
-    use_fixed = fixed_min is not None or fixed_max is not None
-    if use_fixed and (fixed_min is None or fixed_max is None):
-        raise ValueError("fixed_min and fixed_max must both be set, or both omitted")
-    value_cols = [col for col in df.columns if col not in {"OP", "Contingency"}]
-    if not value_cols:
-        return df.copy(), None, None, "empty"
-
-    if use_fixed:
-        global_min, global_max = float(fixed_min), float(fixed_max)
-        source = "fixed"
-    else:
-        bounds = reused_bounds.get(file_name)
-        if bounds is not None:
-            global_min, global_max = bounds
-            source = "reused"
-        else:
-            numeric = pd.concat([pd.to_numeric(df[col], errors="coerce") for col in value_cols])
-            finite = numeric.dropna()
-            if finite.empty:
-                global_min = global_max = None
-                source = "empty"
-            else:
-                global_min = float(finite.min())
-                global_max = float(finite.max())
-                source = "computed"
-
-    out = df.copy()
-    if global_min is not None and global_max is not None:
-        if global_max == global_min:
-            for col in value_cols:
-                values = pd.to_numeric(out[col], errors="coerce")
-                out[col] = values.mask(values.notna(), float(target_min))
-        else:
-            out_span = float(target_max) - float(target_min)
-            for col in value_cols:
-                values = pd.to_numeric(out[col], errors="coerce")
-                out[col] = float(target_min) + ((values - global_min) / (global_max - global_min)) * out_span
-
-    return out, global_min, global_max, source
-
-
-def save_normalization_table(rows: list[dict], output_path: Path) -> Path:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_csv(output_path, index=False)
-    return output_path
-
-
-def cuts_from_config(config: dict, key: str) -> np.ndarray:
-    cuts = ((config.get("kpi") or {}).get("class_bins") or {}).get(key, {}).get("cuts", [])
-    arr = np.asarray(cuts, dtype=float)
-    arr.sort()
-    return arr
-
-
-def apply_flag_mask(dataset: pd.DataFrame, flags: Optional[pd.DataFrame], class_value: int) -> pd.DataFrame:
-    if flags is None or flags.empty or dataset.empty:
-        return dataset
-    if any(col not in dataset.columns for col in ID_COLS) or any(col not in flags.columns for col in ID_COLS):
-        return dataset
-    out = dataset.copy()
-    flags = flags.copy()
-    out.columns = [str(col).strip() for col in out.columns]
-    flags.columns = [str(col).strip() for col in flags.columns]
-
-    for id_col in ID_COLS:
-        out[id_col] = out[id_col].astype("string").str.strip()
-        flags[id_col] = flags[id_col].astype("string").str.strip()
-
-    common_cols = [col for col in out.columns if col not in ID_COLS and col in flags.columns]
-    if not common_cols:
-        return dataset
-
-    target_keys = out[ID_COLS].copy()
-    target_keys["_occ"] = target_keys.groupby(ID_COLS, dropna=False).cumcount()
-    target_keys["_row_idx"] = np.arange(len(out))
-
-    flag_keys = flags[ID_COLS].copy()
-    flag_keys["_occ"] = flag_keys.groupby(ID_COLS, dropna=False).cumcount()
-    flag_keys = pd.concat([flag_keys, flags[common_cols]], axis=1)
-
-    merged = target_keys.merge(flag_keys, on=[*ID_COLS, "_occ"], how="left")
-    for col in common_cols:
-        flagged = pd.to_numeric(merged[col], errors="coerce").eq(1)
-        if not flagged.any():
-            continue
-        row_indices = merged.loc[flagged, "_row_idx"].to_numpy(dtype=int, copy=False)
-        out.loc[row_indices, col] = class_value
-    return out
-
-
-def kpi_values_to_classes(
-    series: pd.Series,
-    *,
-    cuts: np.ndarray,
-    norm_target_min: float = 0.0,
-    norm_target_max: float = 1.0,
-) -> pd.Series:
-    numeric = pd.to_numeric(series, errors="coerce")
-    span = float(norm_target_max) - float(norm_target_min)
-    if span == 0.0:
-        unit = pd.Series(0.5, index=numeric.index, dtype=float).mask(numeric.isna())
-    else:
-        unit = (numeric - float(norm_target_min)) / span
-    unit = unit.clip(lower=0.0, upper=1.0)
-    classes = np.searchsorted(np.asarray(cuts, dtype=float), unit.to_numpy(dtype=float), side="right")
-    return pd.Series(classes, index=series.index).mask(numeric.isna())
-
-
-def build_dataset(
-    normalized_kpi: Optional[pd.DataFrame],
-    output_path: Path,
-    *,
-    cuts: np.ndarray,
-    action_df: Optional[pd.DataFrame] = None,
-    disconnection_df: Optional[pd.DataFrame] = None,
-    norm_target_min: float = 0.0,
-    norm_target_max: float = 1.0,
-) -> Optional[Path]:
-    if normalized_kpi is None:
-        return None
-    df = normalized_kpi
-    value_cols = [col for col in df.columns if col not in {"OP", "Contingency"}]
-    out = df.copy()
-    for col in value_cols:
-        out[col] = kpi_values_to_classes(
-            out[col],
-            cuts=cuts,
-            norm_target_min=norm_target_min,
-            norm_target_max=norm_target_max,
-        )
-    flag_class = int(len(cuts) + 1)
-    out = apply_flag_mask(out, action_df, flag_class)
-    out = apply_flag_mask(out, disconnection_df, flag_class)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    out.to_csv(output_path, index=False)
-    return output_path
-
-
-def build_datasets(
-    *,
-    reuse_normalized_table: Optional[Path] = None,
-    norm_min: Optional[float] = None,
-    norm_max: Optional[float] = None,
-    norm_target_min: float = 0.0,
-    norm_target_max: float = 1.0,
-) -> dict[str, Optional[Path]]:
+def build_datasets() -> dict[str, Optional[Path]]:
     config = load_config()
-    reused_bounds = read_normalization_bounds(reuse_normalized_table)
+    split_csv = DATASET_DIR / "train_val_test_split.csv"
 
     combined_voltage = combine_frames("KPI_voltage_", KPI_DIR)
     combined_spower = combine_frames("KPI_spower_", KPI_DIR)
@@ -440,48 +277,64 @@ def build_datasets(
     masked_spower = apply_flag_mask_to_kpi(combined_spower, combined_actions_spower)
     masked_spower = apply_flag_mask_to_kpi(masked_spower, combined_disc_spower)
 
-    norm_rows = []
-    norm_voltage, v_min, v_max, v_source = normalize_table(
-        masked_voltage,
-        "KPI_voltage.csv",
-        reused_bounds=reused_bounds,
-        target_min=norm_target_min,
-        target_max=norm_target_max,
-        fixed_min=norm_min,
-        fixed_max=norm_max,
-    )
-    norm_rows.append({"File": "KPI_voltage.csv", "GlobalMinUsed": v_min, "GlobalMaxUsed": v_max, "BoundsSource": v_source})
-    norm_spower, s_min, s_max, s_source = normalize_table(
-        masked_spower,
-        "KPI_spower.csv",
-        reused_bounds=reused_bounds,
-        target_min=norm_target_min,
-        target_max=norm_target_max,
-        fixed_min=norm_min,
-        fixed_max=norm_max,
-    )
-    norm_rows.append({"File": "KPI_spower.csv", "GlobalMinUsed": s_min, "GlobalMaxUsed": s_max, "BoundsSource": s_source})
-    kpi_voltage_path = write_table(norm_voltage, KPI_DIR / "KPI_voltage.csv")
-    kpi_spower_path = write_table(norm_spower, KPI_DIR / "KPI_spower.csv")
-    normalization_path = save_normalization_table(norm_rows, KPI_DIR / "KPI_normalization_minmax.csv")
+    kpi_voltage_path = write_table(masked_voltage, KPI_DIR / "KPI_voltage.csv")
+    kpi_spower_path = write_table(masked_spower, KPI_DIR / "KPI_spower.csv")
 
-    dataset_voltage = build_dataset(
-        norm_voltage,
-        DATASET_DIR / "Dataset_Voltage.csv",
-        cuts=cuts_from_config(config, "voltage"),
+    if kpi_voltage_path is None:
+        raise FileNotFoundError("No per-OP KPI_voltage tables found under data/KPI/")
+
+    split_summary = dataset_split.build_dataset_split(
+        kpi_voltage_path,
+        output_csv=split_csv,
+        config=config,
+    )
+
+    split_lookup = load_split_lookup(split_csv)
+    voltage_quantiles = quantile_cuts_from_config(config, "voltage")
+    spower_quantiles = quantile_cuts_from_config(config, "spower")
+
+    NORMALIZATION_DIR.mkdir(parents=True, exist_ok=True)
+
+    dataset_voltage_path, voltage_norm_row = build_class_dataset_for_type(
+        kpi_type="voltage",
+        kpi_df=masked_voltage,
         action_df=combined_actions_voltage,
         disconnection_df=combined_disc_voltage,
-        norm_target_min=norm_target_min,
-        norm_target_max=norm_target_max,
+        split_lookup=split_lookup,
+        quantile_fractions=voltage_quantiles,
+        output_dataset_path=DATASET_DIR / "Dataset_Voltage.csv",
+        scaler_path=NORMALIZATION_DIR / "kpi_scaler_voltage.pkl",
+        apply_disconnection_mask=True,
     )
-    dataset_spower = build_dataset(
-        norm_spower,
-        DATASET_DIR / "Dataset_Spower.csv",
-        cuts=cuts_from_config(config, "spower"),
+
+    dataset_spower_path, spower_norm_row = build_class_dataset_for_type(
+        kpi_type="spower",
+        kpi_df=masked_spower,
         action_df=combined_actions_spower,
         disconnection_df=combined_disc_spower,
-        norm_target_min=norm_target_min,
-        norm_target_max=norm_target_max,
+        split_lookup=split_lookup,
+        quantile_fractions=spower_quantiles,
+        output_dataset_path=DATASET_DIR / "Dataset_Spower.csv",
+        scaler_path=NORMALIZATION_DIR / "kpi_scaler_spower.pkl",
+        apply_disconnection_mask=False,
+    )
+
+    normalization_path = save_normalization_report(
+        [voltage_norm_row, spower_norm_row],
+        NORMALIZATION_DIR / "KPI_normalization.csv",
+    )
+
+    n_classes_voltage = int(voltage_norm_row["n_classes"].iloc[0])
+    n_classes_spower = int(spower_norm_row["n_classes"].iloc[0])
+    n_classes_plot = max(n_classes_voltage, n_classes_spower)
+    voltage_counts = kpi_class_counts(dataset_voltage_path, n_classes_plot)
+    spower_counts = kpi_class_counts(dataset_spower_path, n_classes_plot)
+    distribution_plot_path = plot_voltage_spower_distribution(
+        voltage_counts,
+        spower_counts,
+        title="Dataset_Voltage / Dataset_Spower",
+        n_classes=n_classes_plot,
+        output_path=DATASET_DIR / "dataset_class_distribution.png",
     )
 
     return {
@@ -491,9 +344,14 @@ def build_datasets(
         "disconnections_spower": disc_spower_path,
         "kpi_voltage": kpi_voltage_path,
         "kpi_spower": kpi_spower_path,
+        "split_csv": split_csv,
         "normalization": normalization_path,
-        "dataset_voltage": dataset_voltage,
-        "dataset_spower": dataset_spower,
+        "scaler_voltage": NORMALIZATION_DIR / "kpi_scaler_voltage.pkl",
+        "scaler_spower": NORMALIZATION_DIR / "kpi_scaler_spower.pkl",
+        "dataset_voltage": dataset_voltage_path,
+        "dataset_spower": dataset_spower_path,
+        "distribution_plot": distribution_plot_path,
+        "_split_summary": split_summary,
     }
 
 
@@ -502,7 +360,17 @@ def main() -> None:
     logger = get_logger()
 
     outputs = build_datasets()
+    split_summary = outputs.pop("_split_summary")
 
     logger.info("Dataset construction finished.")
+    logger.info(
+        "Split built. total=%d train=%d val=%d test=%d mode=%s seed=%d",
+        split_summary.total_examples,
+        split_summary.train_examples,
+        split_summary.validation_examples,
+        split_summary.test_examples,
+        split_summary.split_mode,
+        split_summary.seed,
+    )
     for name, path in outputs.items():
         logger.info("%s: %s", name, path)

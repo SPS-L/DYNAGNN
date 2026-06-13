@@ -1,7 +1,7 @@
 # Configuration for DYNAGNN scripts.
 
 dynagnn:
-  version: 1
+  version: 1.1
 
 dynawo:
   path: "path to myEnvDynawo.sh"
@@ -21,9 +21,9 @@ kpi:
   step_sec: 
   class_bins:
     voltage:
-      cuts:
+      cuts:  # quantile fractions in (0, 1) on training z-scores, e.g. [0.25, 0.5, 0.75]
     spower:
-      cuts:
+      cuts:  # quantile fractions in (0, 1) on training z-scores
 
 model:
   num_classes: 

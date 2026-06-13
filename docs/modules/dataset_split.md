@@ -1,21 +1,21 @@
 # `dataset_split.py`
 
-Creates **`train_val_test_split.csv`** from a dataset table (`OP`, `Contingency`, …) using configurable fractions or operating-point grouping.
+Creates **`train_val_test_split.csv`** from a table with `OP` and `Contingency` columns using configurable fractions or operating-point grouping.
 
 ## Used by
 
-- `main.py` (via `src/training.py`, if split file does not exist)
+- `src/dataset_construction.py` (split built from raw `KPI_voltage.csv`)
 
 ## Inputs
 
 | Source | Content |
 |--------|---------|
-| `data/Dataset/Dataset_Voltage.csv` | Example keys for splitting |
+| `data/KPI/KPI_voltage.csv` | Example keys for splitting |
 | `config.yaml` | `training.split_mode`, `seed`, `training` / `validation` / `testing` fractions |
 
 ## Outputs
 
-- `data/Dataset/train_val_test_split.csv` — columns include `OP`, `Contingency`, `split` (`train` / `val` / `test`)
+- `data/Dataset/train_val_test_split.csv` — columns: `split`, `operating_point`, `contingency`
 
 ## Main API
 
@@ -26,9 +26,9 @@ Creates **`train_val_test_split.csv`** from a dataset table (`OP`, `Contingency`
 
 ## Split modes
 
-- **`operating_point`** (default): entire OPs assigned to one split (reduces leakage)
-- Other modes as implemented in module (see source for `split_mode` handling)
+- **`operating_point`**: entire OPs assigned to one split (reduces leakage)
+- **`scenario`**: random split of individual scenarios
 
 ## Notes
 
-Deleting the split CSV forces regeneration on the next `main.py` run with the current config seed.
+Re-run `main.py --from-step dataset` to regenerate the split when `training.*` split settings change.

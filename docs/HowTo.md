@@ -73,8 +73,8 @@ Example (for **bus**, use **Type** `bus` in both cases; **Fault name** is a `bus
 | **network** | `country_filter` | list, or `[]` | Country codes to keep; empty = no filter |
 | **kpi** | `window_sec` | float (s) | KPI window length |
 | | `step_sec` | float (s) | KPI window step |
-| | `class_bins.voltage.cuts` | list of floats | Voltage class boundaries |
-| | `class_bins.spower.cuts` | list of floats | Spower class boundaries |
+| | `class_bins.voltage.cuts` | list of floats in (0, 1) | Training z-score quantile fractions for voltage KPI classes |
+| | `class_bins.spower.cuts` | list of floats in (0, 1) | Training z-score quantile fractions for spower KPI classes |
 | **model** | `num_classes` | integer ≥ 2 | Severity levels |
 | **training** | `epochs` | integer | Max epochs per trial |
 | | `patience` | integer | Early stopping |
@@ -130,7 +130,7 @@ python3 main.py --from-step training
 | `build_op_assets` | `simulate` (initialization + contingency runs) | `inputs/operating_point_*` (IIDM, `.dyd`, …) |
 | `curve_process` | `simulate` (initialization + contingency runs), `build_op_assets` | `Simulations_Scenarios/` with Dynawo `outputs/curves/`, `generator_Snom/`, `inputs/contingencies.csv` |
 | `dataset` | through `curve_process` | `KPI/`, `Actions/`, `Disconnections/`, `op_graphs/` |
-| `training` | through `dataset` | `Dataset/Dataset_Voltage.csv`, `Dataset_Spower.csv`, `op_graphs/`, `op_electric_distance/` |
+| `training` | through `dataset` | `Dataset/Dataset_Voltage.csv`, `Dataset_Spower.csv`, `Dataset/train_val_test_split.csv`, `op_graphs/`, `op_electric_distance/` |
 
 See the per-stage input tables in [`src/simulate.md`](src/simulate.md), [`src/build_op_assets.md`](src/build_op_assets.md), [`src/curves_post_process.md`](src/curves_post_process.md), [`src/dataset_construction.md`](src/dataset_construction.md), and [`src/training.md`](src/training.md).
 
@@ -175,7 +175,7 @@ The following is **exactly what the script writes** to `config.yaml` (shown here
 # Before running main.py, set dynawo.path and data.path to absolute paths on your machine.
 
 dynagnn:
-  version: 1
+  version: 1.1
 
 dynawo:
   path: "/absolute/path/to/myEnvDynawo.sh"
@@ -195,12 +195,12 @@ kpi:
   step_sec: 1.0
   class_bins:
     voltage:
-      cuts: [0.33, 0.66]  # 3 severity bins on [0, 1] + 1 flag class => model.num_classes: 4
+      cuts: [0.25, 0.5, 0.75]  # 4 KPI classes from training z-score quantiles + 1 flag class => model.num_classes: 5
     spower:
-      cuts: [0.33, 0.66]
+      cuts: [0.25, 0.5, 0.75]
 
 model:
-  num_classes: 4
+  num_classes: 5
 
 training:
   epochs: 30          # keep low for a quick smoke test
@@ -211,7 +211,7 @@ training:
   training: 0.8
   validation: 0.1
   testing: 0.1
-  high_class_threshold: 2  # classes >= 2 (2 and 3) are "high" with num_classes: 4
+  high_class_threshold: 3  # classes >= 3 (3 and 4) are "high" with num_classes: 5
   selection_f1_weight: 0.5
   selection_loss_weight: 0.1
 
@@ -262,5 +262,16 @@ inference:
   initialization_duration: 10.0  # steady-state run before graph build; use 0 to skip
 ```
 
-With `model.num_classes: 4` (classes 0–3), `high_class_threshold: 2` treats classes **2 and 3** as high severity. That enables weighted train sampling and the CORAL under-penalty (when Optuna picks `under_penalty_lambda > 0`), and sets the cutoff for `high_recall` / `high_f1` in the validation composite score. See [`src/training.md`](src/training.md) for details.
+With `model.num_classes: 5` (classes 0–4), `high_class_threshold: 3` treats classes **3 and 4** as high severity. Class **4** is the action/disconnection flag class. That enables weighted train sampling and the CORAL under-penalty (when Optuna picks `under_penalty_lambda > 0`), and sets the cutoff for `high_recall` / `high_f1` in the validation composite score. See [`src/training.md`](src/training.md) for details.
+
+### KPI class bins (v1.1)
+
+`kpi.class_bins.<type>.cuts` lists **quantile fractions strictly between 0 and 1** (e.g. `[0.25, 0.5, 0.75]`). During dataset construction, DYNAGNN:
+
+1. Log-transforms raw KPI values (`log1p`).
+2. Fits a global z-score scaler on **training** cells only.
+3. Computes z-score cut thresholds at those quantiles from the training set.
+4. Assigns class labels on validation and test using the same thresholds.
+
+Set `model.num_classes` to **`len(cuts) + 2`** (KPI classes + one flag class). Normalization artifacts are written under `<data.path>/normalization/`.
 

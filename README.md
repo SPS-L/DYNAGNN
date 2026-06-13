@@ -237,7 +237,7 @@ On success you should have:
 - `examples/Nordic/data/model/gat_voltage_best_model.pt`
 - `examples/Nordic/data/model/gat_spower_best_model.pt`
 
-Intermediate outputs (graphs, KPI tables, datasets) live alongside them under `examples/Nordic/data/` (`op_graphs/`, `KPI_*`, `Dataset_*.csv`, `Simulations_Scenarios/`, etc.).
+Intermediate outputs (graphs, KPI tables, datasets, normalization, split CSV) live alongside them under `examples/Nordic/data/` (`op_graphs/`, `KPI/`, `Dataset/`, `normalization/`, `Simulations_Scenarios/`, etc.).
 
 ### Step 5 (optional) — Inference on one operating point
 

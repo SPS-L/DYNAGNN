@@ -23,7 +23,6 @@ from sklearn.preprocessing import StandardScaler
 from torch.utils.data import WeightedRandomSampler
 from torch_geometric.loader import DataLoader
 
-from modules import dataset_split
 from modules.gat_spower_training import run_gat_spower_training
 from modules.gat_voltage_training import run_gat_voltage_training
 from modules.paths import (
@@ -923,23 +922,14 @@ def main() -> None:
     dataset_spower_csv = DATASET_DIR / "Dataset_Spower.csv"
     split_csv = DATASET_DIR / "train_val_test_split.csv"
 
-    # 1) Split (only if missing)
     if not split_csv.exists():
-        logger.info("Split CSV missing. Building split at %s", split_csv)
-        summary = dataset_split.build_dataset_split(dataset_voltage_csv, output_csv=split_csv)
-        logger.info(
-            "Split built. total=%d train=%d val=%d test=%d mode=%s seed=%d",
-            summary.total_examples,
-            summary.train_examples,
-            summary.validation_examples,
-            summary.test_examples,
-            summary.split_mode,
-            summary.seed,
+        raise FileNotFoundError(
+            f"Missing split CSV: {split_csv}. "
+            "Run the dataset construction stage first (main.py --from-step dataset)."
         )
-    else:
-        logger.info("Split CSV exists: %s", split_csv)
+    logger.info("Split CSV: %s", split_csv)
 
-    # 2) Load tables
+    # 1) Load tables
     if not dataset_voltage_csv.exists():
         raise FileNotFoundError(f"Missing voltage dataset CSV: {dataset_voltage_csv}")
     if not dataset_spower_csv.exists():
@@ -952,7 +942,7 @@ def main() -> None:
     logger.info("Graph dir: %s", OP_GRAPHS_DIR)
     logger.info("Electric distance dir: %s", OP_ELECTRIC_DISTANCE_DIR)
 
-    # 3) Build ONE shared PyG dataset (both targets/masks) + electrical distance
+    # 2) Build ONE shared PyG dataset (both targets/masks) + electrical distance
     graph_dataset, skipped = build_graph_dataset_multi(
         dataset_voltage=dataset_voltage,
         dataset_spower=dataset_spower,
@@ -972,7 +962,7 @@ def main() -> None:
         logger=logger,
     )
 
-    # 4) Apply shared split, then scaling + weighted sampling + loaders (as notebook)
+    # 3) Apply shared split, then scaling + weighted sampling + loaders (as notebook)
     node_cont_cols = [1, 2, 3, 4, 6]
     batch_size = int(training_cfg.get("batch_size", 16))
     train_all, val_all, test_all = _split_graph_dataset_by_csv(graph_dataset, split_csv)
@@ -1016,7 +1006,7 @@ def main() -> None:
 
     logger.info("Scaled shared dataset ready. batch_size=%d", batch_size)
 
-    # 5) Voltage task: expose y_voltage as y_class
+    # 4) Voltage task: expose y_voltage as y_class
     for d in train_scaled + val_scaled + test_scaled:
         d.y_class = d.y_voltage
     train_loader_v = _make_train_loader(
@@ -1040,7 +1030,7 @@ def main() -> None:
         logger=logger,
     )
 
-    # 6) Spower task: expose y_spower as y_class
+    # 5) Spower task: expose y_spower as y_class
     for d in train_scaled + val_scaled + test_scaled:
         d.y_class = d.y_spower
     train_loader_s = _make_train_loader(

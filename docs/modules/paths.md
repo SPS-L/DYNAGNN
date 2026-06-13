@@ -18,6 +18,7 @@ Central **path constants** for the DYNAGNN project tree. All paths under the dat
 | `ACTIONS_DIR` | `<data.path>/Actions/` |
 | `DISCONNECTIONS_DIR` | `<data.path>/Disconnections/` |
 | `DATASET_DIR` | `<data.path>/Dataset/` |
+| `NORMALIZATION_DIR` | `<data.path>/normalization/` |
 | `OP_GRAPHS_DIR` | `<data.path>/op_graphs/` |
 | `OP_ELECTRIC_DISTANCE_DIR` | `<data.path>/op_electric_distance/` |
 | `SNOM_DIR` | `<data.path>/generator_Snom/` |
