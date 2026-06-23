@@ -21,9 +21,9 @@ kpi:
   step_sec: 
   class_bins:
     voltage:
-      cuts:  # quantile fractions in (0, 1) on training z-scores, e.g. [0.25, 0.5, 0.75]
+      cuts:  # activity fractions in (0, 1) along training z range, e.g. [0.5, 0.8, 0.9]
     spower:
-      cuts:  # quantile fractions in (0, 1) on training z-scores
+      cuts:  # activity fractions in (0, 1) along training z range
 
 model:
   num_classes: 

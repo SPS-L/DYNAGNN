@@ -18,12 +18,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from modules import dataset_split
+from modules.kpi_visualization import plot_all_kpi_pipeline_histograms
 from modules.normalization import (
+    activity_fraction_cuts_from_config,
     build_class_dataset_for_type,
     kpi_class_counts,
     load_split_lookup,
     plot_voltage_spower_distribution,
-    quantile_cuts_from_config,
     save_normalization_report,
 )
 from modules.paths import (
@@ -290,30 +291,30 @@ def build_datasets() -> dict[str, Optional[Path]]:
     )
 
     split_lookup = load_split_lookup(split_csv)
-    voltage_quantiles = quantile_cuts_from_config(config, "voltage")
-    spower_quantiles = quantile_cuts_from_config(config, "spower")
+    voltage_activity = activity_fraction_cuts_from_config(config, "voltage")
+    spower_activity = activity_fraction_cuts_from_config(config, "spower")
 
     NORMALIZATION_DIR.mkdir(parents=True, exist_ok=True)
 
-    dataset_voltage_path, voltage_norm_row = build_class_dataset_for_type(
+    dataset_voltage_path, voltage_norm_row, voltage_scaler, voltage_z_cuts = build_class_dataset_for_type(
         kpi_type="voltage",
         kpi_df=masked_voltage,
         action_df=combined_actions_voltage,
         disconnection_df=combined_disc_voltage,
         split_lookup=split_lookup,
-        quantile_fractions=voltage_quantiles,
+        activity_fractions=voltage_activity,
         output_dataset_path=DATASET_DIR / "Dataset_Voltage.csv",
         scaler_path=NORMALIZATION_DIR / "kpi_scaler_voltage.pkl",
         apply_disconnection_mask=True,
     )
 
-    dataset_spower_path, spower_norm_row = build_class_dataset_for_type(
+    dataset_spower_path, spower_norm_row, spower_scaler, spower_z_cuts = build_class_dataset_for_type(
         kpi_type="spower",
         kpi_df=masked_spower,
         action_df=combined_actions_spower,
         disconnection_df=combined_disc_spower,
         split_lookup=split_lookup,
-        quantile_fractions=spower_quantiles,
+        activity_fractions=spower_activity,
         output_dataset_path=DATASET_DIR / "Dataset_Spower.csv",
         scaler_path=NORMALIZATION_DIR / "kpi_scaler_spower.pkl",
         apply_disconnection_mask=False,
@@ -337,6 +338,18 @@ def build_datasets() -> dict[str, Optional[Path]]:
         output_path=DATASET_DIR / "dataset_class_distribution.png",
     )
 
+    kpi_viz_dir = DATASET_DIR / "KPI_visualization"
+    kpi_pipeline_plots = plot_all_kpi_pipeline_histograms(
+        voltage_df=masked_voltage,
+        spower_df=masked_spower,
+        split_lookup=split_lookup,
+        voltage_scaler=voltage_scaler,
+        spower_scaler=spower_scaler,
+        voltage_z_cuts=voltage_z_cuts,
+        spower_z_cuts=spower_z_cuts,
+        output_dir=kpi_viz_dir,
+    )
+
     return {
         "actions_voltage": actions_voltage_path,
         "actions_spower": actions_spower_path,
@@ -351,6 +364,8 @@ def build_datasets() -> dict[str, Optional[Path]]:
         "dataset_voltage": dataset_voltage_path,
         "dataset_spower": dataset_spower_path,
         "distribution_plot": distribution_plot_path,
+        "kpi_visualization_dir": kpi_viz_dir,
+        "kpi_pipeline_plots": kpi_pipeline_plots,
         "_split_summary": split_summary,
     }
 

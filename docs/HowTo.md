@@ -73,8 +73,8 @@ Example (for **bus**, use **Type** `bus` in both cases; **Fault name** is a `bus
 | **network** | `country_filter` | list, or `[]` | Country codes to keep; empty = no filter |
 | **kpi** | `window_sec` | float (s) | KPI window length |
 | | `step_sec` | float (s) | KPI window step |
-| | `class_bins.voltage.cuts` | list of floats in (0, 1) | Training z-score quantile fractions for voltage KPI classes |
-| | `class_bins.spower.cuts` | list of floats in (0, 1) | Training z-score quantile fractions for spower KPI classes |
+| | `class_bins.voltage.cuts` | list of floats in (0, 1) | Activity fractions along training z range for voltage KPI classes |
+| | `class_bins.spower.cuts` | list of floats in (0, 1) | Activity fractions along training z range for spower KPI classes |
 | **model** | `num_classes` | integer ≥ 2 | Severity levels |
 | **training** | `epochs` | integer | Max epochs per trial |
 | | `patience` | integer | Early stopping |
@@ -195,9 +195,9 @@ kpi:
   step_sec: 1.0
   class_bins:
     voltage:
-      cuts: [0.25, 0.5, 0.75]  # 4 KPI classes from training z-score quantiles + 1 flag class => model.num_classes: 5
+      cuts: [0.5, 0.8, 0.9]  # 4 KPI classes from training z range (log10 + z-score) + 1 flag class => model.num_classes: 5
     spower:
-      cuts: [0.25, 0.5, 0.75]
+      cuts: [0.5, 0.8, 0.9]  # activity fractions along training z_min..z_max
 
 model:
   num_classes: 5
@@ -266,12 +266,13 @@ With `model.num_classes: 5` (classes 0–4), `high_class_threshold: 3` treats cl
 
 ### KPI class bins (v1.1)
 
-`kpi.class_bins.<type>.cuts` lists **quantile fractions strictly between 0 and 1** (e.g. `[0.25, 0.5, 0.75]`). During dataset construction, DYNAGNN:
+`kpi.class_bins.<type>.cuts` lists **activity fractions strictly between 0 and 1** (e.g. `[0.5, 0.8, 0.9]`). During dataset construction, DYNAGNN:
 
-1. Log-transforms raw KPI values (`log1p`).
-2. Fits a global z-score scaler on **training** cells only.
-3. Computes z-score cut thresholds at those quantiles from the training set.
-4. Assigns class labels on validation and test using the same thresholds.
+1. Replaces raw KPI zeros with the smallest positive value in the table (`log10(0)` is undefined).
+2. Applies **`log10`** to finite positive KPI values.
+3. Fits a global z-score scaler on **training** cells only.
+4. Computes z-cut thresholds along the training z range: `z_min + fraction × (z_max − z_min)`.
+5. Assigns class labels on validation and test using the same thresholds.
 
-Set `model.num_classes` to **`len(cuts) + 2`** (KPI classes + one flag class). Normalization artifacts are written under `<data.path>/normalization/`.
+Set `model.num_classes` to **`len(cuts) + 2`** (KPI classes + one flag class). Normalization artifacts are written under `<data.path>/normalization/`. Pipeline histograms (raw, log10, z-score with cuts) are saved under `<data.path>/Dataset/KPI_visualization/`.
 

@@ -31,9 +31,9 @@ kpi:
   step_sec: 1.0
   class_bins:
     voltage:
-      cuts: [0.25, 0.5, 0.75]  # 4 KPI classes from training z-score quantiles + 1 flag class => model.num_classes: 5
+      cuts: [0.5, 0.8, 0.9]  # 4 KPI classes from training z range (log10 + z-score) + 1 flag class => model.num_classes: 5
     spower:
-      cuts: [0.25, 0.5, 0.75]
+      cuts: [0.5, 0.8, 0.9]  # activity fractions along training z_min..z_max
 
 model:
   num_classes: 5

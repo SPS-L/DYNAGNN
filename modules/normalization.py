@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Sustainable Power Systems Laboratory (https://sps-lab.org/)
-# Part of DYNAGNN: KPI log-transform, z-score normalization, and class labeling
+# Part of DYNAGNN: KPI log10 transform, z-score normalization, and class labeling
 
 from __future__ import annotations
 
@@ -58,8 +58,8 @@ def load_split_lookup(split_csv: Path) -> Dict[Tuple[str, str], str]:
     return lookup
 
 
-def quantile_cuts_from_config(config: Mapping[str, object], key: str) -> np.ndarray:
-    """Read quantile fractions in (0, 1) from ``kpi.class_bins.<key>.cuts``."""
+def activity_fraction_cuts_from_config(config: Mapping[str, object], key: str) -> np.ndarray:
+    """Read activity fractions in (0, 1) from ``kpi.class_bins.<key>.cuts``."""
     section = ((config.get("kpi") or {}).get("class_bins") or {}).get(key, {})
     if isinstance(section, dict):
         raw_cuts = section.get("cuts", [])
@@ -73,31 +73,50 @@ def quantile_cuts_from_config(config: Mapping[str, object], key: str) -> np.ndar
 
     if not isinstance(raw_cuts, list) or not raw_cuts:
         raise ValueError(
-            f"kpi.class_bins.{key}.cuts must be a non-empty list of quantile fractions in (0, 1)"
+            f"kpi.class_bins.{key}.cuts must be a non-empty list of activity fractions in (0, 1)"
         )
 
     arr = np.asarray(raw_cuts, dtype=float)
     if np.any(arr <= 0) or np.any(arr >= 1):
         raise ValueError(
-            f"kpi.class_bins.{key}.cuts quantile fractions must be strictly between 0 and 1: {arr}"
+            f"kpi.class_bins.{key}.cuts activity fractions must be strictly between 0 and 1: {arr}"
         )
     arr.sort()
     return arr
 
 
-def log_transform_series(series: pd.Series) -> pd.Series:
-    numeric = pd.to_numeric(series, errors="coerce")
-    out = pd.Series(np.nan, index=series.index, dtype=float)
-    valid = numeric.notna() & (numeric > -1.0)
-    if valid.any():
-        out.loc[valid] = np.log1p(numeric.loc[valid].to_numpy(dtype=float))
+def prepare_kpi_matrix(df: pd.DataFrame, value_cols: Sequence[str]) -> tuple[np.ndarray, int]:
+    """Return a 2D KPI matrix with zeros replaced by the smallest positive value."""
+    values = df[value_cols].to_numpy(dtype=float)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        raise ValueError("No finite KPI values found in table.")
+
+    n_zeros = int((finite == 0).sum())
+    positive = finite[finite > 0]
+    if positive.size == 0:
+        raise ValueError("No positive KPI values found.")
+
+    values = values.copy()
+    values[values == 0] = float(positive.min())
+    return values, n_zeros
+
+
+def log10_transform_values(values: np.ndarray) -> np.ndarray:
+    """Apply log10 to finite positive cells; leave NaNs as NaN."""
+    out = np.full(values.shape, np.nan, dtype=float)
+    mask = np.isfinite(values) & (values > 0)
+    out[mask] = np.log10(values[mask])
     return out
 
 
 def log_transform_dataframe(df: pd.DataFrame, value_cols: Sequence[str]) -> pd.DataFrame:
+    """Zero-replace then log10-transform KPI value columns."""
+    values, _ = prepare_kpi_matrix(df, value_cols)
+    log10_values = log10_transform_values(values)
     out = df.copy()
-    for col in value_cols:
-        out[col] = log_transform_series(out[col])
+    for j, col in enumerate(value_cols):
+        out[col] = log10_values[:, j]
     return out
 
 
@@ -116,7 +135,7 @@ def fit_global_standard_scaler_on_train(
     values: np.ndarray,
     train_mask: np.ndarray,
 ) -> StandardScaler:
-    """Fit one global mu and sigma on all finite log-KPI values from train rows."""
+    """Fit one global mu and sigma on all finite log10(KPI) values from train rows."""
     train_values = values[train_mask]
     flat = train_values[np.isfinite(train_values)]
     if flat.size == 0:
@@ -141,13 +160,26 @@ def transform_values(scaler: StandardScaler, values: np.ndarray) -> np.ndarray:
 def compute_z_cut_thresholds(
     z_values: np.ndarray,
     train_mask: np.ndarray,
-    quantile_fractions: np.ndarray,
+    activity_fractions: np.ndarray,
 ) -> np.ndarray:
+    """
+    Cut thresholds along the training z activity scale.
+
+    Each cut: z_min + fraction * (z_max - z_min) on finite training z-scores.
+    """
     train_z = z_values[train_mask]
     flat = train_z[np.isfinite(train_z)]
     if flat.size == 0:
         raise ValueError("No finite training z-scores to compute class cut thresholds")
-    return np.quantile(flat, quantile_fractions)
+    z_min = float(np.min(flat))
+    z_max = float(np.max(flat))
+    if not np.isfinite(z_min) or not np.isfinite(z_max) or z_max <= z_min:
+        raise ValueError(
+            f"Training z range is degenerate: z_min={z_min!r}, z_max={z_max!r}"
+        )
+    activity_fractions = np.asarray(activity_fractions, dtype=float)
+    span = z_max - z_min
+    return z_min + activity_fractions * span
 
 
 def z_values_to_class_array(z_arr: np.ndarray, z_cuts: np.ndarray) -> np.ndarray:
@@ -207,8 +239,8 @@ def apply_flag_mask_to_matching_rows(
     return out
 
 
-def _z_cut_column_name(quantile_fraction: float) -> str:
-    pct = quantile_fraction * 100.0
+def _z_cut_column_name(activity_fraction: float) -> str:
+    pct = activity_fraction * 100.0
     if abs(pct - round(pct)) < 1e-9:
         return f"z_cut_p{int(round(pct))}"
     label = f"{pct:.6g}".replace(".", "p")
@@ -219,7 +251,7 @@ def build_normalization_row(
     *,
     kpi_type: str,
     scaler: StandardScaler,
-    quantile_fractions: np.ndarray,
+    activity_fractions: np.ndarray,
     z_cuts: np.ndarray,
     action_disconnect_class: int,
 ) -> pd.DataFrame:
@@ -230,7 +262,7 @@ def build_normalization_row(
         "sigma": sigma,
     }
 
-    for frac, z_cut in zip(quantile_fractions, z_cuts):
+    for frac, z_cut in zip(activity_fractions, z_cuts):
         row[_z_cut_column_name(float(frac))] = float(z_cut)
 
     n_kpi_classes = int(len(z_cuts) + 1)
@@ -250,11 +282,11 @@ def build_class_dataset_for_type(
     action_df: pd.DataFrame,
     disconnection_df: Optional[pd.DataFrame],
     split_lookup: Dict[Tuple[str, str], str],
-    quantile_fractions: np.ndarray,
+    activity_fractions: np.ndarray,
     output_dataset_path: Path,
     scaler_path: Path,
     apply_disconnection_mask: bool,
-) -> Tuple[Path, pd.DataFrame]:
+) -> Tuple[Path, pd.DataFrame, StandardScaler, np.ndarray]:
     if kpi_df is None or kpi_df.empty:
         raise ValueError(f"KPI table is empty for {kpi_type}")
 
@@ -268,18 +300,19 @@ def build_class_dataset_for_type(
     if not value_cols:
         raise ValueError(f"No value columns in KPI table for {kpi_type}")
 
-    logged_df = log_transform_dataframe(kpi_df, value_cols)
+    prepared_values, _n_zeros = prepare_kpi_matrix(kpi_df, value_cols)
+    log10_values = log10_transform_values(prepared_values)
 
-    train_mask = row_split_mask(logged_df, split_lookup, "train")
+    train_mask = row_split_mask(kpi_df, split_lookup, "train")
     if int(train_mask.sum()) == 0:
         raise ValueError(f"No train rows matched {kpi_type} KPI table against split CSV")
 
-    values = logged_df[value_cols].to_numpy(dtype=float)
+    values = log10_values
     scaler = fit_global_standard_scaler_on_train(values, train_mask)
     z_values = transform_values(scaler, values)
 
-    quantile_fractions = np.asarray(quantile_fractions, dtype=float)
-    z_cuts = compute_z_cut_thresholds(z_values, train_mask, quantile_fractions)
+    activity_fractions = np.asarray(activity_fractions, dtype=float)
+    z_cuts = compute_z_cut_thresholds(z_values, train_mask, activity_fractions)
     n_kpi_classes = int(z_cuts.size) + 1
     action_disconnect_class = n_kpi_classes
 
@@ -310,12 +343,12 @@ def build_class_dataset_for_type(
     norm_row = build_normalization_row(
         kpi_type=kpi_type,
         scaler=scaler,
-        quantile_fractions=quantile_fractions,
+        activity_fractions=activity_fractions,
         z_cuts=z_cuts,
         action_disconnect_class=action_disconnect_class,
     )
 
-    return output_dataset_path, norm_row
+    return output_dataset_path, norm_row, scaler, z_cuts
 
 
 def save_normalization_report(rows: Sequence[pd.DataFrame], output_path: Path) -> Path:

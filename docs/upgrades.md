@@ -53,27 +53,27 @@ The cut values $c_j$ were **fixed in configuration** (e.g. $0.33$, $0.66$): they
 
 ---
 
-## Version 1.1 — log transform, train-only z-score, and quantile-based bins
+## Version 1.1 — log10 transform, train-only z-score, and range-based bins
 
 ### Pre-processing
 
-All finite raw values with $x > -1$ are log-transformed **before** any split-specific step:
+Raw KPI zeros are replaced with the **smallest positive value** in the table (because $\log_{10}(0)$ is undefined). All finite positive values are then log-transformed **before** any split-specific step:
 
-$$x' = \ln(1 + x)$$
+$$x' = \log_{10}(x)$$
 
 This is applied to the **entire dataset** (train, validation, and test).
 
-#### Why log-transform?
+#### Why log10?
 
-KPI values are derived from **maximum windowed variance** of post-contingency curves. They are non-negative, strongly **right-skewed**, and often **heavy-tailed**: most components stay near zero, while a few near the fault can be orders of magnitude larger.
+KPI values are derived from **maximum windowed variance** of post-contingency curves. They are non-negative, strongly **right-skewed**, and often span many orders of magnitude: most components stay near zero, while a few near the fault can be much larger.
 
-Applying $\ln(1+x)$ before z-scoring:
+Applying $\log_{10}$ before z-scoring:
 
-- **Handles zeros cleanly:** $\ln(1+0)=0$, so inactive components are unchanged; plain $\ln(x)$ would be undefined at $x=0$.
-- **Compresses the upper tail:** large spikes contribute less disproportionately to $\mu$ and $\sigma$, so a single global z-score is meaningful across the full training pool.
-- **Stabilises quantile bins:** without log, most training $z$-values would cluster below a few outliers, and cuts such as $Q_{0.25}(z)$ would separate only the lowest-variance cells rather than spread severity levels more evenly.
+- **Handles zeros:** zeros are mapped to the smallest positive value so $\log_{10}$ is defined everywhere finite values exist.
+- **Compresses multiplicative spread:** large spikes contribute less disproportionately to $\mu$ and $\sigma$, so a single global z-score is meaningful across the full training pool.
+- **Stabilises range bins:** without log, most training $z$-values would cluster below a few outliers.
 
-In short, log-transform maps wide **multiplicative** spreads in raw variance onto a scale where **additive** z-scores and quantile thresholds better reflect relative dynamic activity. Only $\mu$, $\sigma$, and $\{\tau_j\}$ are fit on training data; the log step itself is not split-specific.
+Only $\mu$, $\sigma$, and $\{\tau_j\}$ are fit on training data; the log step itself is not split-specific.
 
 ### Normalization (z-score)
 
@@ -87,15 +87,15 @@ $$z = \frac{x' - \mu}{\sigma}$$
 
 Validation and test cells are transformed with the same $\mu$ and $\sigma$; they do **not** influence $\mu$ or $\sigma$.
 
-### Class labeling (quantile cuts on training $z$)
+### Class labeling (range cuts on training $z$)
 
-Configuration supplies quantile fractions
+Configuration supplies activity fractions
 
-$$0 < q_1 < q_2 < \cdots < q_K < 1$$
+$$0 < f_1 < f_2 < \cdots < f_K < 1$$
 
-From the **training** z-scores only, cut thresholds are estimated as empirical quantiles:
+From **training** z-scores only, define the empirical range $z_{\min}$ and $z_{\max}$ on finite train cells. Cut thresholds are placed along that range:
 
-$$\tau_j = Q_{q_j}(z \mid \text{train}), \quad j = 1,\ldots,K$$
+$$\tau_j = z_{\min} + f_j \,(z_{\max} - z_{\min}), \quad j = 1,\ldots,K$$
 
 For each finite $z$ (any split), the KPI severity class is
 
@@ -107,13 +107,13 @@ $$y_{\mathrm{flag}} = M, \qquad M = K + 1$$
 
 (the index of the first flag class equals the number of KPI severity classes). Voltage applies disconnection flags; spower applies action flags only.
 
-**Total number of classes:** $K + 2$, with $K = |\{q_j\}|$.
+**Total number of classes:** $K + 2$, with $K = |\{f_j\}|$.
 
-Unlike v1.0, the effective bin boundaries $\{\tau_j\}$ are **data-driven on the training set** (via quantiles of $z$), while the **fractions** $\{q_j\}$ remain user-specified in configuration.
+Unlike v1.0, the effective bin boundaries $\{\tau_j\}$ are **data-driven on the training set** (via the training z range), while the **fractions** $\{f_j\}$ remain user-specified in configuration.
 
-### Artifacts
+### Artifacts and diagnostics
 
-Version 1.1 stores $\mu$, $\sigma$, the $\tau_j$, and fitted scalers under a dedicated **normalization** folder. Combined KPI tables retain **raw** (masked) values; class labels live only in the dataset tables.
+Version 1.1 stores $\mu$, $\sigma$, the $\tau_j$, and fitted scalers under a dedicated **normalization** folder. Combined KPI tables retain **raw** (masked) values; class labels live only in the dataset tables. Dataset construction also writes histograms under `Dataset/KPI_visualization/`: raw KPI (log-scaled axes), $\log_{10}(\mathrm{KPI})$, and z-score with class-cut overlays.
 
 ---
 
@@ -121,11 +121,11 @@ Version 1.1 stores $\mu$, $\sigma$, the $\tau_j$, and fitted scalers under a ded
 
 | Aspect | v1.0 | v1.1 |
 |--------|------|------|
-| Transform before scaling | None | $x' = \ln(1+x)$ |
+| Transform before scaling | None | Zero replace, then $x' = \log_{10}(x)$ |
 | Scale parameters | $x_{\min}$, $x_{\max}$ from **all** data | $\mu$, $\sigma$ from **train** only |
 | Normalized quantity | $\tilde{x} \in [0,1]$ | $z \in \mathbb{R}$ |
-| Bin boundaries | Fixed $c_j \in (0,1)$ on $\tilde{x}$ | $\tau_j = Q_{q_j}(z \mid \text{train})$ |
-| Config `cuts` meaning | Interval edges on $[0,1]$ | Quantile levels for training $z$ |
+| Bin boundaries | Fixed $c_j \in (0,1)$ on $\tilde{x}$ | $\tau_j = z_{\min} + f_j\,(z_{\max} - z_{\min})$ |
+| Config `cuts` meaning | Interval edges on $[0,1]$ | Activity fractions along training $z$ range |
 | Split timing | After labeling (training stage) | Before normalization (dataset stage) |
 | KPI table content | Normalized values | Raw KPI values |
 
@@ -137,7 +137,7 @@ Version 1.1 stores $\mu$, $\sigma$, the $\tau_j$, and fitted scalers under a ded
 
 **v1.0** with $c = (0.25,\, 0.5,\, 0.75)$: after min–max, class 0 is $\tilde{x} \le 0.25$, class 1 is $(0.25, 0.5]$, etc., regardless of how many training points fall in each bin.
 
-**v1.1** with $q = (0.25,\, 0.5,\, 0.75)$: $\tau_1$, $\tau_2$, $\tau_3$ are the 25th, 50th, and 75th percentiles of **training** $z$; on training data, KPI classes 0–3 each contain approximately 25% of finite cells (up to ties and boundary effects). The same $\tau_j$ are applied to validation and test.
+**v1.1** with $f = (0.5,\, 0.8,\, 0.9)$: on training $z$, take $z_{\min}$ and $z_{\max}$; $\tau_j = z_{\min} + f_j (z_{\max} - z_{\min})$. Class 0 is $z \le \tau_1$, class 1 is $(\tau_1, \tau_2]$, etc. The same $\tau_j$ are applied to validation and test.
 
 In both versions, flag cells receive class $K+1$ and **total classes** $= K + 2$.
 
@@ -145,7 +145,7 @@ In both versions, flag cells receive class $K+1$ and **total classes** $= K + 2$
 
 ## Migration note
 
-When upgrading from v1.0 to v1.1, replace interval-style cut values (e.g. $0.33$, $0.66$) with quantile fractions (e.g. $0.25$, $0.5$, $0.75$) and set the model class count to $|\{q_j\}| + 2$. Re-run dataset construction so splits, scalers, cuts, and labels are regenerated consistently.
+When upgrading from v1.0 to v1.1, replace interval-style cut values (e.g. $0.33$, $0.66$) with activity fractions along the training z range (e.g. $0.5$, $0.8$, $0.9$) and set the model class count to $|\{f_j\}| + 2$. Re-run dataset construction so splits, scalers, cuts, and labels are regenerated consistently.
 
 ---
 
@@ -157,6 +157,6 @@ $$\tilde{x} = \frac{x - x_{\min}}{x_{\max} - x_{\min}} \approx 0 \quad \text{for
 
 Components that still exhibit **meaningful** dynamic activity can end up with $\tilde{x}$ indistinguishably close to inactive ones, simply because they are small **relative to the most extreme case**, not because they are physically unimportant. Severity labels therefore become sensitive to which rare contingencies happen to appear in the table. The pipeline **depends heavily on the composition of the dataset**, and the same physical response can receive different classes if the global range shifts—making it harder for the model to **generalize** to new operating points or fault patterns.
 
-Version 1.1 addresses this by describing dynamics through **statistical behavior** rather than absolute rescaled magnitude. Log-transform and train-only z-scoring summarize how active a component is **relative to the training distribution**; quantile cuts on $z$ define severity bins from that distribution instead of fixed edges on $[0,1]$. Validation and test data are labeled with thresholds learned from training only, which reduces leakage and stabilizes the meaning of each class across splits.
+Version 1.1 addresses this by describing dynamics through **statistical behavior** rather than absolute rescaled magnitude. Log10 transform (with zero replacement) and train-only z-scoring summarize how active a component is **relative to the training distribution**; range cuts on $z$ define severity bins from the training z span instead of fixed edges on $[0,1]$. Validation and test data are labeled with thresholds learned from training only, which reduces leakage and stabilizes the meaning of each class across splits.
 
 With a representative training set, this approach captures the **statistical structure of dynamic activity** in the grid. The model can learn **patterns of behavior**—how disturbance severity ranks across components and scenarios—rather than memorizing label boundaries that collapse whenever one contingency dominates the min–max range. Supervision is aligned with **relative severity**, so the GAT learns the statistical behavior of dynamics, not arbitrary rescaled labels tied to a few extreme scenarios.

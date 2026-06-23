@@ -1,6 +1,6 @@
 # `src/dataset_construction.py`
 
-Merges per-OP KPI and flag tables, builds the train/val/test split, applies **log-transform + z-score normalization** (train-only fit), discretizes severity into class labels, and writes normalization artifacts.
+Merges per-OP KPI and flag tables, builds the train/val/test split, applies **log10 + z-score normalization** (train-only fit), discretizes severity into class labels, and writes normalization artifacts.
 
 ## Invoked by
 
@@ -11,8 +11,8 @@ Merges per-OP KPI and flag tables, builds the train/val/test split, applies **lo
 1. Merge per-OP KPI, action, and disconnection tables; mask flagged KPI cells with `NaN` in the raw combined KPI tables.
 2. Write **`KPI_voltage.csv`** / **`KPI_spower.csv`** (raw KPI values, not normalized).
 3. Build **`train_val_test_split.csv`** from the voltage KPI table (`OP`, `Contingency`) using `training.*` split settings.
-4. For each KPI type: `log1p` on the full dataset → fit a global `StandardScaler` on **train** cells only → transform all splits → compute z-score quantile cuts from train → assign class labels → override action/disconnection cells to the flag class.
-5. Save scalers, normalization report, class-label datasets, and a class-distribution plot.
+4. For each KPI type: replace zeros with the smallest positive value → **`log10`** on the full dataset → fit a global `StandardScaler` on **train** cells only → transform all splits → compute **range-based** z-cut thresholds from train (`z_min + fraction × (z_max − z_min)`) → assign class labels → override action/disconnection cells to the flag class.
+5. Save scalers, normalization report, class-label datasets, class-distribution plot, and KPI pipeline histograms.
 
 ## Inputs
 
@@ -22,7 +22,7 @@ Merges per-OP KPI and flag tables, builds the train/val/test split, applies **lo
 | `data/Actions/actions_*_operating_point_*.csv` | Action flags |
 | `data/Disconnections/disconnections_*_operating_point_*.csv` | Disconnection flags |
 | `data/op_graphs/operating_point_N.pt` | Graph component ids (filters unknown contingencies) |
-| `config.yaml` | `kpi.class_bins.*.cuts` (quantile fractions), `training.*` (split) |
+| `config.yaml` | `kpi.class_bins.*.cuts` (activity fractions), `training.*` (split) |
 
 ## Outputs
 
@@ -37,12 +37,13 @@ Merges per-OP KPI and flag tables, builds the train/val/test split, applies **lo
 | `data/Dataset/Dataset_Voltage.csv` | Class labels (voltage task) |
 | `data/Dataset/Dataset_Spower.csv` | Class labels (spower task) |
 | `data/Dataset/dataset_class_distribution.png` | Grouped bar chart of class counts (voltage vs spower) |
+| `data/Dataset/KPI_visualization/KPI_*_histogram*.png` | Raw, log10, and z-score histograms with class cuts |
 
 Rows use **`OP`**, **`Contingency`**, plus one column per network component id.
 
 ## Class bins (`kpi.class_bins`)
 
-`cuts` lists **quantile fractions in (0, 1)**, e.g. `[0.25, 0.5, 0.75]` → four KPI severity classes from pooled training z-scores, plus one action/disconnection flag class. Set `model.num_classes` to `len(cuts) + 2`.
+`cuts` lists **activity fractions in (0, 1)** along the training z-score range, e.g. `[0.5, 0.8, 0.9]` → cut thresholds at 50 %, 80 %, and 90 % of the way from training `z_min` to `z_max`, giving four KPI severity classes, plus one action/disconnection flag class. Set `model.num_classes` to `len(cuts) + 2`.
 
 ## Main entry points
 
@@ -53,4 +54,4 @@ Rows use **`OP`**, **`Contingency`**, plus one column per network component id.
 
 ## Related modules
 
-- [`normalization`](../modules/normalization.md), [`dataset_split`](../modules/dataset_split.md), [`paths`](../modules/paths.md)
+- [`normalization`](../modules/normalization.md), [`kpi_visualization`](../modules/kpi_visualization.md), [`dataset_split`](../modules/dataset_split.md), [`paths`](../modules/paths.md)
