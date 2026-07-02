@@ -21,6 +21,8 @@ This page keeps the longer, technical setup notes so the project-root [`README.m
 
 Each `operating_point_<N>/` folder must contain the Dynawo case (`*.iidm` or `*.xiidm`, `*.dyd`, `*.jobs`, `*.par`, and optionally `*.crt`).
 
+**Solver precision:** When you create or duplicate operating points, ensure every `*.jobs` file uses the **same solver precision** across all OPs (e.g. identical `precision` / `iidmImport/export` settings in the Dynawo job XML). Mixed precision between OPs can change numerical KPI values enough to shift class labels at the raw cut thresholds.
+
 3. Fill in **`config.yaml`** completely before running the pipeline (all sections below).
 
 ---
@@ -73,8 +75,8 @@ Example (for **bus**, use **Type** `bus` in both cases; **Fault name** is a `bus
 | **network** | `country_filter` | list, or `[]` | Country codes to keep; empty = no filter |
 | **kpi** | `window_sec` | float (s) | KPI window length |
 | | `step_sec` | float (s) | KPI window step |
-| | `class_bins.voltage.cuts` | list of floats in (0, 1) | Activity fractions along training z range for voltage KPI classes |
-| | `class_bins.spower.cuts` | list of floats in (0, 1) | Activity fractions along training z range for spower KPI classes |
+| | `class_bins.voltage.cuts` | list of positive floats (ascending) | Raw KPI cut thresholds for voltage class labels |
+| | `class_bins.spower.cuts` | list of positive floats (ascending) | Raw KPI cut thresholds for spower class labels |
 | **model** | `num_classes` | integer ≥ 2 | Severity levels |
 | **training** | `epochs` | integer | Max epochs per trial |
 | | `patience` | integer | Early stopping |
@@ -142,18 +144,18 @@ Each `main.py` run still recreates `<data.path>/dynagnn.log` from scratch.
 
 ### Operating points in the Nordic example
 
-| Operating point | Description | Total generator Power (MW) |
-|----------------|-------------|-----------------------------|
-| **1** | Original (from Dynawo `DynaWaltz` repo) | 11506.0 |
-| **2** | 10% decrease | 10398.3 |
-| **3** | 20% decrease | 9359.5 |
-| **4** | 30% decrease | 8309.6 |
-| **5** | 35% decrease | 7783.4 |
-| **6** | 40% decrease | 7241.1 |
-| **7** | 50% decrease | 6169.1 |
-| **8** | 55% decrease | 5658.8 |
-| **9** | 60% decrease | 5207.7 |
-| **10** | 70% decrease | 4609.8 |
+| Operating point | Total generator Power (MW) |
+|----------------|-----------------------------|
+| **1** | 11506.0 |
+| **2** | 10398.3 |
+| **3** | 9359.5 |
+| **4** | 8309.6 |
+| **5** | 7783.4 |
+| **6** | 7241.1 |
+| **7** | 6169.1 |
+| **8** | 5658.8 |
+| **9** | 5207.7 |
+| **10** | 4609.8 |
 
 Operating point **1** is the unmodified Nordic case from the Dynawo `DynaWaltz` repository. Points **2–10** were produced with **Dynawo load-area variation** events run as **dynamic simulations**: a ramped load reduction was applied to **all loads**, and the percentage in the table is the **reduction per load** (e.g. 10% decrease → each load ends at **90%** of its initial value). Generators rebalanced through **primary frequency control** during those runs.
 
@@ -175,7 +177,7 @@ The following is **exactly what the script writes** to `config.yaml` (shown here
 # Before running main.py, set dynawo.path and data.path to absolute paths on your machine.
 
 dynagnn:
-  version: 1.1
+  version: 1.11
 
 dynawo:
   path: "/absolute/path/to/myEnvDynawo.sh"
@@ -195,12 +197,12 @@ kpi:
   step_sec: 1.0
   class_bins:
     voltage:
-      cuts: [0.5, 0.8, 0.9]  # 4 KPI classes from training z range (log10 + z-score) + 1 flag class => model.num_classes: 5
+      cuts: [1e-7, 7.5e-7, 7.5e-6, 1.5e-5]  # 5 KPI classes (0-4) + 1 flag class => model.num_classes: 6
     spower:
-      cuts: [0.5, 0.8, 0.9]  # activity fractions along training z_min..z_max
+      cuts: [1e-7, 7.5e-7, 7.5e-6, 1.5e-5]
 
 model:
-  num_classes: 5
+  num_classes: 6
 
 training:
   epochs: 30          # keep low for a quick smoke test
@@ -211,7 +213,7 @@ training:
   training: 0.8
   validation: 0.1
   testing: 0.1
-  high_class_threshold: 3  # classes >= 3 (3 and 4) are "high" with num_classes: 5
+  high_class_threshold: 4  # classes >= 4 (4 and 5) are "high" with num_classes: 6
   selection_f1_weight: 0.5
   selection_loss_weight: 0.1
 
@@ -262,17 +264,15 @@ inference:
   initialization_duration: 10.0  # steady-state run before graph build; use 0 to skip
 ```
 
-With `model.num_classes: 5` (classes 0–4), `high_class_threshold: 3` treats classes **3 and 4** as high severity. Class **4** is the action/disconnection flag class. That enables weighted train sampling and the CORAL under-penalty (when Optuna picks `under_penalty_lambda > 0`), and sets the cutoff for `high_recall` / `high_f1` in the validation composite score. See [`src/training.md`](src/training.md) for details.
+With `model.num_classes: 6` (classes 0–5), `high_class_threshold: 4` treats classes **4 and 5** as high severity. Class **5** is the action/disconnection flag class. That enables weighted train sampling and the CORAL under-penalty (when Optuna picks `under_penalty_lambda > 0`), and sets the cutoff for `high_recall` / `high_f1` in the validation composite score. See [`src/training.md`](src/training.md) for details.
 
-### KPI class bins (v1.1)
+### KPI class bins (v1.11)
 
-`kpi.class_bins.<type>.cuts` lists **activity fractions strictly between 0 and 1** (e.g. `[0.5, 0.8, 0.9]`). During dataset construction, DYNAGNN:
+`kpi.class_bins.<type>.cuts` lists **strictly increasing raw KPI thresholds** (e.g. `[1e-7, 7.5e-7, 7.5e-6, 1.5e-5]`). During dataset construction, DYNAGNN:
 
-1. Replaces raw KPI zeros with the smallest positive value in the table (`log10(0)` is undefined).
-2. Applies **`log10`** to finite positive KPI values.
-3. Fits a global z-score scaler on **training** cells only.
-4. Computes z-cut thresholds along the training z range: `z_min + fraction × (z_max − z_min)`.
-5. Assigns class labels on validation and test using the same thresholds.
+1. Uses raw KPI values from the combined KPI tables (no log transform or scaling).
+2. Assigns class labels from the fixed cuts (classes 0–4 by KPI magnitude).
+3. Overrides action / disconnection cells to class 5 (voltage and spower: actions + DISC).
 
-Set `model.num_classes` to **`len(cuts) + 2`** (KPI classes + one flag class). Normalization artifacts are written under `<data.path>/normalization/`. Pipeline histograms (raw, log10, z-score with cuts) are saved under `<data.path>/Dataset/KPI_visualization/`.
+Set `model.num_classes` to **`len(cuts) + 2`**. Applied cuts are recorded in `<data.path>/Dataset/KPI_class_bins.csv`.
 

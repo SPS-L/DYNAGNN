@@ -11,7 +11,7 @@ YAML_TEMPLATE = """# Configuration for DYNAGNN scripts.
 # Before running main.py, set dynawo.path and data.path to absolute paths on your machine.
 
 dynagnn:
-  version: 1.1
+  version: 1.11
 
 dynawo:
   path: "{dynawo_env_sh}"
@@ -31,12 +31,12 @@ kpi:
   step_sec: 1.0
   class_bins:
     voltage:
-      cuts: [0.5, 0.8, 0.9]  # 4 KPI classes from training z range (log10 + z-score) + 1 flag class => model.num_classes: 5
+      cuts: [1e-7, 7.5e-7, 7.5e-6, 1.5e-5]  # 5 KPI classes (0-4) + 1 flag class => model.num_classes: 6
     spower:
-      cuts: [0.5, 0.8, 0.9]  # activity fractions along training z_min..z_max
+      cuts: [1e-7, 7.5e-7, 7.5e-6, 1.5e-5]
 
 model:
-  num_classes: 5
+  num_classes: 6
 
 training:
   epochs: 30          # keep low for a quick smoke test
@@ -47,7 +47,7 @@ training:
   training: 0.8
   validation: 0.1
   testing: 0.1
-  high_class_threshold: 3  # classes >= 3 (3 and 4) are "high" with num_classes: 5
+  high_class_threshold: 4  # classes >= 4 (4 and 5) are "high" with num_classes: 6
   selection_f1_weight: 0.5
   selection_loss_weight: 0.1
 

@@ -41,7 +41,6 @@ __all__ = [
     "ACTIONS_DIR",
     "DISCONNECTIONS_DIR",
     "DATASET_DIR",
-    "NORMALIZATION_DIR",
     "OP_GRAPHS_DIR",
     "OP_ELECTRIC_DISTANCE_DIR",
 ]
@@ -83,7 +82,6 @@ _SYMBOL_TO_MODULE = {
     "ACTIONS_DIR": "paths",
     "DISCONNECTIONS_DIR": "paths",
     "DATASET_DIR": "paths",
-    "NORMALIZATION_DIR": "paths",
     "OP_GRAPHS_DIR": "paths",
     "OP_ELECTRIC_DISTANCE_DIR": "paths",
 }

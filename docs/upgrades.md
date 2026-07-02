@@ -1,17 +1,17 @@
-# DYNAGNN version 1.1
+# DYNAGNN version history
 
-This note summarizes methodological changes in **v1.1**, with emphasis on KPI normalization and class labeling. Notation: $x$ denotes a raw KPI value for one component in one scenario; flagged or invalid cells are excluded from the steps below.
+This note documents KPI normalization and class-labeling methodology across **v1.0**, **v1.1**, and **v1.11** (current). Notation: $x$ denotes a raw KPI value for one component in one scenario; flagged or invalid cells are excluded from the steps below.
 
 ---
 
 ## Pipeline order
 
-| Stage | Version 1.0 | Version 1.1 |
-|-------|-------------|-------------|
-| Combined KPI tables | Raw values, then min–max normalized in place | Raw values only (no normalization in KPI tables) |
-| Train / validation / test split | Built **after** class labeling, during training | Built **before** normalization, from raw voltage scenarios |
-| Class datasets | Produced in dataset construction | Same stage, but with a different normalization and labeling rule |
-| Normalization metadata | Min / max per KPI table | $\mu$, $\sigma$, and training z-score cut thresholds |
+| Stage | Version 1.0 | Version 1.1 | Version 1.11 |
+|-------|-------------|-------------|--------------|
+| Combined KPI tables | Raw values, then min–max normalized in place | Raw values only | Raw values only |
+| Train / validation / test split | Built **after** class labeling, during training | Built **before** labeling, from raw voltage scenarios | Same as v1.1 |
+| Class datasets | Produced in dataset construction | Same stage; log10 + z-score + range cuts | Same stage; **fixed raw KPI cuts** |
+| Labeling metadata | Min / max per KPI table | $\mu$, $\sigma$, training z-cut thresholds | Raw cut thresholds in `KPI_class_bins.csv` |
 
 ---
 
@@ -111,52 +111,104 @@ $$y_{\mathrm{flag}} = M, \qquad M = K + 1$$
 
 Unlike v1.0, the effective bin boundaries $\{\tau_j\}$ are **data-driven on the training set** (via the training z range), while the **fractions** $\{f_j\}$ remain user-specified in configuration.
 
-### Artifacts and diagnostics
+### Artifacts and diagnostics (v1.1)
 
-Version 1.1 stores $\mu$, $\sigma$, the $\tau_j$, and fitted scalers under a dedicated **normalization** folder. Combined KPI tables retain **raw** (masked) values; class labels live only in the dataset tables. Dataset construction also writes histograms under `Dataset/KPI_visualization/`: raw KPI (log-scaled axes), $\log_{10}(\mathrm{KPI})$, and z-score with class-cut overlays.
+Version 1.1 stored $\mu$, $\sigma$, the $\tau_j$, and fitted scalers under a dedicated **normalization** folder. Combined KPI tables retained **raw** (masked) values; class labels lived only in the dataset tables. Dataset construction also wrote histograms under `Dataset/KPI_visualization/`: raw KPI (log-scaled axes), $\log_{10}(\mathrm{KPI})$, and z-score with class-cut overlays.
+
+---
+
+## Version 1.11 — fixed raw KPI class cuts (current)
+
+### Rationale
+
+KPI values are already a **variance-based measure of dynamic activity** on the physical scale. Discretizing them into ordered severity classes **already encodes** which events are mild vs severe: higher classes correspond to larger post-contingency dynamics without an extra rescaling step.
+
+Because the downstream task is **classification** (not regression on a normalized continuous target), additional log transforms, z-scoring, or train-derived bin placement add complexity without improving the supervision signal. Fixed **raw KPI cut thresholds** in configuration define severity bands directly on the same scale produced by `src/curves_post_process.py`.
+
+There is no need for normalization, scaling, or distribution-fitting artifacts between KPI extraction and class labeling.
+
+### Class labeling
+
+Configuration supplies a sorted list of **raw KPI cut thresholds** (e.g. $10^{-7}$, $7.5\times10^{-7}$, $7.5\times10^{-6}$, $1.5\times10^{-5}$). For each finite raw KPI value $x$:
+
+| Class | Rule (example with four cuts) |
+|-------|-------------------------------|
+| 0 | $x \le \tau_1$ |
+| 1 | $\tau_1 < x \le \tau_2$ |
+| 2 | $\tau_2 < x \le \tau_3$ |
+| 3 | $\tau_3 < x \le \tau_4$ |
+| 4 | $x > \tau_4$ |
+
+where $\tau_1,\ldots,\tau_K$ are the configured cuts. Cells with action or disconnection flags are assigned the **flag class** $K+1$ (voltage and spower: actions + disconnection).
+
+**Total number of classes:** $K + 2$ with $K = |\{\tau_j\}|$.
+
+Cuts are **fixed in configuration** on the raw KPI scale and do not depend on the training split or empirical distribution.
+
+### Artifacts (v1.11)
+
+| Path | Role |
+|------|------|
+| `data/KPI/KPI_voltage.csv`, `KPI_spower.csv` | Combined raw KPI tables (masked) |
+| `data/Dataset/Dataset_Voltage.csv`, `Dataset_Spower.csv` | Class labels from raw cuts |
+| `data/Dataset/KPI_class_bins.csv` | Applied raw cut thresholds and class metadata |
+| `data/Dataset/dataset_class_distribution.png` | Class-count bar chart |
+
+**Removed:** `modules/normalization.py`, `modules/kpi_visualization.py`, `<data.path>/normalization/`, and `Dataset/KPI_visualization/`.
 
 ---
 
 ## Side-by-side summary
 
-| Aspect | v1.0 | v1.1 |
-|--------|------|------|
-| Transform before scaling | None | Zero replace, then $x' = \log_{10}(x)$ |
-| Scale parameters | $x_{\min}$, $x_{\max}$ from **all** data | $\mu$, $\sigma$ from **train** only |
-| Normalized quantity | $\tilde{x} \in [0,1]$ | $z \in \mathbb{R}$ |
-| Bin boundaries | Fixed $c_j \in (0,1)$ on $\tilde{x}$ | $\tau_j = z_{\min} + f_j\,(z_{\max} - z_{\min})$ |
-| Config `cuts` meaning | Interval edges on $[0,1]$ | Activity fractions along training $z$ range |
-| Split timing | After labeling (training stage) | Before normalization (dataset stage) |
-| KPI table content | Normalized values | Raw KPI values |
+| Aspect | v1.0 | v1.1 | v1.11 |
+|--------|------|------|-------|
+| Transform before labeling | None | Zero replace, then $x' = \log_{10}(x)$ | None |
+| Scaling | Min–max on **all** data → $\tilde{x} \in [0,1]$ | Train-only z-score on $\log_{10}(x)$ | None |
+| Quantity used for bins | $\tilde{x}$ | $z$ | Raw $x$ |
+| Config `cuts` meaning | Interval edges on $[0,1]$ | Activity fractions along training $z$ range | Raw KPI thresholds (ascending) |
+| Bin boundaries | Fixed $c_j$ on $\tilde{x}$ | $\tau_j = z_{\min} + f_j\,(z_{\max} - z_{\min})$ from **train** | Fixed $\tau_j$ on raw KPI scale |
+| Split timing | After labeling (training stage) | Before labeling (dataset stage) | Before labeling (dataset stage) |
+| KPI table content | Normalized values | Raw KPI values | Raw KPI values |
+| Extra artifacts | Min–max bounds CSV | Scalers, `KPI_normalization.csv`, KPI histograms | `KPI_class_bins.csv` only |
 
 ---
 
 ## Example (illustrative)
 
-**Configuration:** three cuts ($K = 3$).
+**Configuration:** three interior cuts ($K = 3$) → four KPI severity classes plus one flag class → **total classes** $= 5$.
 
 **v1.0** with $c = (0.25,\, 0.5,\, 0.75)$: after min–max, class 0 is $\tilde{x} \le 0.25$, class 1 is $(0.25, 0.5]$, etc., regardless of how many training points fall in each bin.
 
 **v1.1** with $f = (0.5,\, 0.8,\, 0.9)$: on training $z$, take $z_{\min}$ and $z_{\max}$; $\tau_j = z_{\min} + f_j (z_{\max} - z_{\min})$. Class 0 is $z \le \tau_1$, class 1 is $(\tau_1, \tau_2]$, etc. The same $\tau_j$ are applied to validation and test.
 
-In both versions, flag cells receive class $K+1$ and **total classes** $= K + 2$.
+**v1.11** with raw cuts $\tau = (10^{-7},\, 7.5\times10^{-7},\, 7.5\times10^{-6})$ (three cuts, four KPI classes): class 0 is $x \le 10^{-7}$, class 1 is $(10^{-7},\, 7.5\times10^{-7}]$, etc., on the **raw** KPI from curve post-processing. With a fourth cut $1.5\times10^{-5}$, class 4 is $x > 1.5\times10^{-5}$ and **total classes** $= 6$ including the flag class.
+
+In all versions, flag cells receive class $K+1$.
 
 ---
 
-## Migration note
+## Migration notes
 
-When upgrading from v1.0 to v1.1, replace interval-style cut values (e.g. $0.33$, $0.66$) with activity fractions along the training z range (e.g. $0.5$, $0.8$, $0.9$) and set the model class count to $|\{f_j\}| + 2$. Re-run dataset construction so splits, scalers, cuts, and labels are regenerated consistently.
+**v1.0 → v1.1:** Replace interval-style cut values (e.g. $0.33$, $0.66$) with activity fractions along the training z range (e.g. $0.5$, $0.8$, $0.9$). Set `model.num_classes` to $|\{f_j\}| + 2$. Re-run dataset construction so splits, scalers, cuts, and labels are regenerated consistently.
+
+**v1.1 → v1.11:** Replace activity fractions in `kpi.class_bins.*.cuts` with **raw KPI thresholds** (strictly increasing positive values). Set `dynagnn.version` to `1.11` and `model.num_classes` to `len(cuts) + 2`. Re-run from `dataset` (or the full pipeline). Remove obsolete `normalization/` and `Dataset/KPI_visualization/` folders if present.
 
 ---
 
-## Reason for the update
+## Reason for the updates
+
+### v1.0 → v1.1
 
 Version 1.0 mapped every raw KPI onto $[0,1]$ using a **single global** minimum and maximum taken over the full dataset. When the corpus contains even a few scenarios with very severe dynamics, those outliers set $x_{\max}$. Every other value is then compressed toward zero:
 
 $$\tilde{x} = \frac{x - x_{\min}}{x_{\max} - x_{\min}} \approx 0 \quad \text{for most cells}$$
 
-Components that still exhibit **meaningful** dynamic activity can end up with $\tilde{x}$ indistinguishably close to inactive ones, simply because they are small **relative to the most extreme case**, not because they are physically unimportant. Severity labels therefore become sensitive to which rare contingencies happen to appear in the table. The pipeline **depends heavily on the composition of the dataset**, and the same physical response can receive different classes if the global range shifts—making it harder for the model to **generalize** to new operating points or fault patterns.
+Components that still exhibit **meaningful** dynamic activity can end up with $\tilde{x}$ indistinguishably close to inactive ones, simply because they are small **relative to the most extreme case**, not because they are physically unimportant. Severity labels therefore become sensitive to which rare contingencies happen to appear in the table.
 
-Version 1.1 addresses this by describing dynamics through **statistical behavior** rather than absolute rescaled magnitude. Log10 transform (with zero replacement) and train-only z-scoring summarize how active a component is **relative to the training distribution**; range cuts on $z$ define severity bins from the training z span instead of fixed edges on $[0,1]$. Validation and test data are labeled with thresholds learned from training only, which reduces leakage and stabilizes the meaning of each class across splits.
+Version 1.1 addressed this by describing dynamics through **statistical behavior** rather than absolute rescaled magnitude. Log10 transform (with zero replacement) and train-only z-scoring summarize how active a component is **relative to the training distribution**; range cuts on $z$ define severity bins from the training z span instead of fixed edges on $[0,1]$.
 
-With a representative training set, this approach captures the **statistical structure of dynamic activity** in the grid. The model can learn **patterns of behavior**—how disturbance severity ranks across components and scenarios—rather than memorizing label boundaries that collapse whenever one contingency dominates the min–max range. Supervision is aligned with **relative severity**, so the GAT learns the statistical behavior of dynamics, not arbitrary rescaled labels tied to a few extreme scenarios.
+### v1.1 → v1.11
+
+Version 1.1 still introduced an intermediate continuous representation ($z$-scores) and train-dependent cut placement before discretization. For a **classification** pipeline, that step is redundant: the KPI itself already ranks dynamic severity on a physically meaningful scale, and the class index is the quantity the GAT is trained to predict.
+
+Version 1.11 assigns labels **directly from raw KPI values** using fixed thresholds chosen for the problem domain. Severity is encoded once—at labeling time—without log transforms, scalers, or split-specific bin fitting. The supervision signal is easier to interpret, reproducible across datasets, and independent of which contingencies happen to dominate the training distribution.

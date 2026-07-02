@@ -1,7 +1,7 @@
 # Configuration for DYNAGNN scripts.
 
 dynagnn:
-  version: 1.1
+  version: 1.11
 
 dynawo:
   path: "path to myEnvDynawo.sh"
@@ -21,9 +21,9 @@ kpi:
   step_sec: 
   class_bins:
     voltage:
-      cuts:  # activity fractions in (0, 1) along training z range, e.g. [0.5, 0.8, 0.9]
+      cuts:  # raw KPI thresholds (ascending), e.g. [1e-7, 7.5e-7, 7.5e-6, 1.5e-5]
     spower:
-      cuts:  # activity fractions in (0, 1) along training z range
+      cuts:  # raw KPI thresholds (ascending)
 
 model:
   num_classes: 

@@ -42,4 +42,4 @@ Per OP under `data/KPI/`:
 
 ## Notes
 
-Contingencies without `curves.xml` are skipped with a warning. Downstream `dataset_construction.py` normalizes and discretizes these tables using `kpi.class_bins`.
+Contingencies without `curves.xml` are skipped with a warning. Downstream `dataset_construction.py` discretizes these raw tables into class labels using `kpi.class_bins`.
