@@ -24,19 +24,7 @@ Builds **static per-operating-point assets** from pre-fault inputs (no Dynawo si
 
 | Function | Description |
 |----------|-------------|
-| `main()` | Build assets for all `operating_point_*` folders under `--inputs` (default `data/inputs/`) |
-
-## CLI flags (when called programmatically with `argparse`)
-
-| Flag | Purpose |
-|------|---------|
-| `--skip-electrical-distance` | Skip distance CSVs |
-| `--skip-generator-snom` | Skip SNom CSVs |
-| `--skip-existing-graphs` | Skip existing `.pt` files |
-| `--skip-existing-electric-distance` | Skip existing distance CSVs |
-| `--skip-existing-generator-snom` | Skip existing SNom CSVs |
-| `--verbose` | Print node/edge type counts |
-| `--show-examples` | Print one example metadata record per type |
+| `main()` | Build graphs, electrical-distance CSVs, and generator SNom tables for all `operating_point_*` folders under `data/inputs/` |
 
 ## Related modules
 
