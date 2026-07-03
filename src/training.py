@@ -925,7 +925,7 @@ def main() -> None:
     if not split_csv.exists():
         raise FileNotFoundError(
             f"Missing split CSV: {split_csv}. "
-            "Run the dataset construction stage first (main.py --from-step dataset)."
+            "Run the curve_process stage first (main.py --to-step curve_process)."
         )
     logger.info("Split CSV: %s", split_csv)
 

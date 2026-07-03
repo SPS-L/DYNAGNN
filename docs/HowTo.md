@@ -95,21 +95,77 @@ Example (for **bus**, use **Type** `bus` in both cases; **Fault name** is a `bus
 
 ---
 
-## Resuming the pipeline (`--from-step`)
+## KPI cut thresholds — recommendations
+
+DYNAGNN turns **continuous** KPI values (sliding-window variance of post-contingency curves) into **ordinal** severity classes. Each band should represent **increasing dynamic behavior**: class 0 is the least active; higher classes capture progressively stronger responses.
+
+### Choose cuts on the training set only
+
+Cut thresholds define what “mild” vs “severe” means for your problem. **Perform this analysis only on training scenarios** — never on validation or test rows. Using val/test KPIs to pick bins leaks split information into the labels and invalidates evaluation.
+
+Suggested workflow:
+
+1. Run the pipeline through **`curve_process`** and stop there:
+
+```bash
+python3 main.py --to-step curve_process
+```
+
+2. Use these files under `<data.path>/` (all produced by `curve_process`):
+
+| File | Role |
+|------|------|
+| `KPI/KPI_voltage.csv` | Combined raw voltage KPI values (flagged cells masked with `NaN`) |
+| `KPI/KPI_spower.csv` | Combined raw spower KPI values (flagged cells masked with `NaN`) |
+| `Dataset/train_val_test_split.csv` | Train / validation / test assignment per scenario (`split`, `operating_point`, `contingency`) |
+
+3. Join the KPI tables with `train_val_test_split.csv` and **keep only rows where `split` is `train`**. Inspect the training KPI distribution (histograms, percentiles, class counts after tentative cuts).
+4. Set `kpi.class_bins.voltage.cuts` and `kpi.class_bins.spower.cuts` in `config.yaml`, then run the remaining stages:
+
+```bash
+python3 main.py --from-step dataset
+```
+
+(or `python3 main.py --from-step dataset --to-step training` if you only want dataset + training).
+
+### Recommended first cut (class 0 → class 1)
+
+**Class 0** should be the **inactive / numerical-noise** band: components whose post-contingency KPI is effectively at the solver noise floor.
+
+A practical lower bound for that floor is the **maximum variance of numerical noise**, which scales as **k²**, where **k** is the **solver precision** declared in your `*.jobs` files (see [Solver precision](#data-folder-and-configyaml) above). Use the **first cut** τ₁ so that class 0 is KPI ≤ τ₁ and class 1 starts above τ₁:
+
+| Class | Meaning (example with four cuts) |
+|-------|----------------------------------|
+| 0 | KPI ≤ τ₁ — inactive / noise-dominated |
+| 1 | τ₁ < KPI ≤ τ₂ |
+| 2+ | progressively stronger dynamics |
+
+Set τ₁ to **at least k²** so class 0 is not filled with numerical artifacts. You may raise τ₁ slightly after training-set analysis if a strict k² threshold leaves class 0 too sparse or too large.
+
+**Nordic example:** solver precision is **k = 10⁻⁴**, so **k² = 10⁻⁸**. On the Nordic **training** set, we used **τ₁ = 10⁻⁷** for both voltage and spower (`cuts: [1e-7, 7.5e-7, 7.5e-6, 1.5e-5]`) — slightly above k² to obtain a more balanced class distribution while still treating the lowest band as noise-dominated.
+
+Higher cuts (τ₂, τ₃, …) have no universal default: choose them from **training-set** percentiles or domain reasoning so each class reflects meaningfully stronger dynamics than the previous one.
+
+---
+
+## Pipeline control (`--from-step`, `--to-step`)
 
 `main.py` runs five stages in order:
 
 1. **`simulate`** — optional per-OP **initialization**, curve export setup, and Dynawo **contingency runs** (`src/simulate.py`)
 2. **`build_op_assets`** — graphs, electrical distance, generator SNom (`src/build_op_assets.py`)
-3. **`curve_process`** — KPI tables and action/disconnection flags (`src/curves_post_process.py`)
-4. **`dataset`** — merged datasets and class labels (`src/dataset_construction.py`)
+3. **`curve_process`** — per-OP KPI/flag tables, combined KPI CSVs, and train/val/test split (`src/curves_post_process.py`)
+4. **`dataset`** — class labels from configured KPI cuts (`src/dataset_construction.py`)
 5. **`training`** — GAT training and model export (`src/training.py`)
 
-Omit `--from-step` to run the **full pipeline** (including initialization and contingency simulations). To **rerun from a later stage** (for example after fixing config or code downstream of simulations), pass `--from-step`:
+Omit both flags for a **full run**. Use **`--from-step`** to resume from a later stage; use **`--to-step`** to stop after a stage (inclusive).
 
 ```bash
 # Full run (default)
 python3 main.py
+
+# Run through curve_process only (for KPI cut analysis)
+python3 main.py --to-step curve_process
 
 # Skip initialization and contingency simulations; rebuild graph assets and continue
 python3 main.py --from-step build_op_assets
@@ -117,11 +173,14 @@ python3 main.py --from-step build_op_assets
 # Skip simulations and graph assets; start at curve/KPI post-processing
 python3 main.py --from-step curve_process
 
-# Rebuild datasets only (KPI/Actions/Disconnections must already exist)
+# Rebuild class-label datasets only (combined KPI/split CSVs must already exist)
 python3 main.py --from-step dataset
 
 # Retrain models only (dataset CSVs and graph assets must already exist)
 python3 main.py --from-step training
+
+# Dataset + training only (after setting KPI cuts)
+python3 main.py --from-step dataset --to-step training
 ```
 
 **Prerequisites:** each start point assumes the **outputs of all earlier stages** are already present under `<data.path>/`. If required files are missing, the step will fail.
@@ -130,9 +189,15 @@ python3 main.py --from-step training
 |---------------|-------|------------------------|
 | *(omit — full run)* | — | `inputs/` cases and `contingencies.csv` |
 | `build_op_assets` | `simulate` (initialization + contingency runs) | `inputs/operating_point_*` (IIDM, `.dyd`, …) |
-| `curve_process` | `simulate` (initialization + contingency runs), `build_op_assets` | `Simulations_Scenarios/` with Dynawo `outputs/curves/`, `generator_Snom/`, `inputs/contingencies.csv` |
-| `dataset` | through `curve_process` | `KPI/`, `Actions/`, `Disconnections/`, `op_graphs/` |
+| `curve_process` | `simulate` (initialization + contingency runs), `build_op_assets` | `Simulations_Scenarios/` with Dynawo `outputs/curves/`, `generator_Snom/`, `inputs/contingencies.csv`, `op_graphs/` |
+| `dataset` | through `curve_process` | `KPI/KPI_voltage.csv`, `KPI/KPI_spower.csv`, `Dataset/train_val_test_split.csv`, `Actions/ACTIONS_*.csv`, `Disconnections/DISC_*.csv` |
 | `training` | through `dataset` | `Dataset/Dataset_Voltage.csv`, `Dataset_Spower.csv`, `Dataset/train_val_test_split.csv`, `op_graphs/`, `op_electric_distance/` |
+
+| `--to-step` | Stops after | Key outputs for cut analysis / next stage |
+|-------------|-------------|-------------------------------------------|
+| `curve_process` | Combined KPI tables + split | `KPI/KPI_voltage.csv`, `KPI/KPI_spower.csv`, `Dataset/train_val_test_split.csv` |
+| `dataset` | Class-label datasets | `Dataset/Dataset_Voltage.csv`, `Dataset/Dataset_Spower.csv`, `Dataset/KPI_class_bins.csv` |
+| `training` | Trained models | `model/gat_voltage_best_model.pt`, `model/gat_spower_best_model.pt` |
 
 See the per-stage input tables in [`src/simulate.md`](src/simulate.md), [`src/build_op_assets.md`](src/build_op_assets.md), [`src/curves_post_process.md`](src/curves_post_process.md), [`src/dataset_construction.md`](src/dataset_construction.md), and [`src/training.md`](src/training.md).
 
@@ -267,6 +332,8 @@ inference:
 With `model.num_classes: 6` (classes 0–5), `high_class_threshold: 4` treats classes **4 and 5** as high severity. Class **5** is the action/disconnection flag class. That enables weighted train sampling and the CORAL under-penalty (when Optuna picks `under_penalty_lambda > 0`), and sets the cutoff for `high_recall` / `high_f1` in the validation composite score. See [`src/training.md`](src/training.md) for details.
 
 ### KPI class bins (v1.11)
+
+See [KPI cut thresholds — recommendations](#kpi-cut-thresholds--recommendations) for how to choose cuts (training set only, noise floor at k², Nordic example).
 
 `kpi.class_bins.<type>.cuts` lists **strictly increasing raw KPI thresholds** (e.g. `[1e-7, 7.5e-7, 7.5e-6, 1.5e-5]`). During dataset construction, DYNAGNN:
 

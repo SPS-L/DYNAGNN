@@ -127,16 +127,17 @@ See [`docs/HowTo.md`](docs/HowTo.md) for the detailed setup:
 python3 main.py
 ```
 
-Omit the flag for a **full run**. To **resume from a later stage** (rerun without repeating simulations), use `--from-step`:
+Omit both flags for a **full run**. Use **`--from-step`** to resume from a later stage; use **`--to-step`** to stop after a stage (e.g. `--to-step curve_process` for KPI cut analysis).
 
 ```bash
+python3 main.py --to-step curve_process   # through combined KPI tables + split
 python3 main.py --from-step build_op_assets # skip init + simulations; from graph assets
 python3 main.py --from-step curve_process   # from KPI/curve post-processing
 python3 main.py --from-step dataset         # from dataset construction
 python3 main.py --from-step training        # retrain only
 ```
 
-Earlier-stage outputs must already exist under `<data.path>/`. See [`docs/HowTo.md`](docs/HowTo.md#resuming-the-pipeline---from-step) for prerequisites per step.
+Earlier-stage outputs must already exist under `<data.path>/`. See [`docs/HowTo.md`](docs/HowTo.md#pipeline-control---from-step---to-step) for prerequisites per step.
 
 **Note**: if some Dynawo simulations fail, DYNAGNN **does not proceed with those examples**. Downstream steps (graphs, KPIs, dataset build, training) automatically **skip failed scenarios** and continue with the successful ones.
 
@@ -223,7 +224,7 @@ source .venv/bin/activate   # if using venv
 python3 main.py
 ```
 
-`main.py` runs, in order: initialization and Dynawo contingency simulations → graph assets → curve/KPI post-processing → dataset build → GAT training. Use `--from-step` to start at a later stage when rerunning (see [Step 1](#step-1--run-training-mainpy)).
+`main.py` runs, in order: initialization and Dynawo contingency simulations → graph assets → curve/KPI post-processing (including combined KPI tables and split) → dataset build → GAT training. Use `--from-step` / `--to-step` to control the run range when rerunning (see [Step 1](#step-1--run-training-mainpy)).
 
 This example has **many** contingencies × 10 operating points; the first full run can take a long time. Progress and errors are written to:
 

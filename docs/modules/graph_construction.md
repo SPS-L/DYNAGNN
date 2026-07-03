@@ -47,4 +47,4 @@ Nodes: `bus`, `generator`, `load`. Edges: `line`, `transformer`, `connection` (a
 
 ## Notes
 
-`dataset_construction.py` drops KPI rows whose `Contingency` is not represented on the graph for that OP.
+`curves_post_process.py` drops KPI rows whose `Contingency` is not represented on the graph for that OP when merging per-OP tables.

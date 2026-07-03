@@ -5,7 +5,7 @@ Detects **control and topology actions** after the fault time from Dynawo **time
 ## Used by
 
 - `main.py` (via `src/curves_post_process.py`)
-- `dataset_construction.py` (masks KPI cells where action = 1)
+- `dataset_construction.py` (action flags for class-label override)
 
 ## Inputs
 
@@ -35,4 +35,4 @@ Cell value `1` means an action affected that component; `0` otherwise.
 ## Notes
 
 - Timeline events are linked through DYD connections to buses, lines, generators, and voltage levels.
-- Combined tables `ACTIONS_voltage.csv` / `ACTIONS_spower.csv` are produced by `dataset_construction.py`.
+- Combined tables `ACTIONS_voltage.csv` / `ACTIONS_spower.csv` are produced by `curves_post_process.py`.

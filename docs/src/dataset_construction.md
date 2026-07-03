@@ -1,6 +1,6 @@
 # `src/dataset_construction.py`
 
-Merges per-OP KPI and flag tables, builds the train/val/test split, assigns class labels from **fixed raw KPI cut thresholds**, and writes dataset artifacts.
+Assigns class labels from **fixed raw KPI cut thresholds** and writes dataset artifacts. Expects combined KPI and flag tables from `curve_process`.
 
 ## Invoked by
 
@@ -8,30 +8,23 @@ Merges per-OP KPI and flag tables, builds the train/val/test split, assigns clas
 
 ## Pipeline (v1.11)
 
-1. Merge per-OP KPI, action, and disconnection tables; mask flagged KPI cells with `NaN` in the raw combined KPI tables.
-2. Write **`KPI_voltage.csv`** / **`KPI_spower.csv`** (raw KPI values).
-3. Build **`train_val_test_split.csv`** from the voltage KPI table (`OP`, `Contingency`) using `training.*` split settings.
-4. For each KPI type: assign class labels from fixed raw cuts in `config.yaml` → override action/disconnection cells to the flag class.
-5. Save class-bins report, class-label datasets, and class-distribution plot.
+1. Read combined KPI and flag tables written by `curve_process`.
+2. For each KPI type: assign class labels from fixed raw cuts in `config.yaml` → override action/disconnection cells to the flag class.
+3. Save class-bins report, class-label datasets, and class-distribution plot.
 
 ## Inputs
 
 | Source | Content |
 |--------|---------|
-| `data/KPI/KPI_*_operating_point_*.csv` | Raw KPI tables |
-| `data/Actions/actions_*_operating_point_*.csv` | Action flags |
-| `data/Disconnections/disconnections_*_operating_point_*.csv` | Disconnection flags |
-| `data/op_graphs/operating_point_N.pt` | Graph component ids (filters unknown contingencies) |
-| `config.yaml` | `kpi.class_bins.*.cuts` (raw KPI thresholds), `training.*` (split) |
+| `data/KPI/KPI_voltage.csv`, `KPI_spower.csv` | Combined raw KPI tables (masked) |
+| `data/Actions/ACTIONS_voltage.csv`, `ACTIONS_spower.csv` | Combined action flags |
+| `data/Disconnections/DISC_voltage.csv`, `DISC_spower.csv` | Combined disconnection flags |
+| `config.yaml` | `kpi.class_bins.*.cuts` (raw KPI thresholds) |
 
 ## Outputs
 
 | Path | Role |
 |------|------|
-| `data/Actions/ACTIONS_voltage.csv`, `ACTIONS_spower.csv` | Combined action flags |
-| `data/Disconnections/DISC_voltage.csv`, `DISC_spower.csv` | Combined disconnection flags |
-| `data/KPI/KPI_voltage.csv`, `KPI_spower.csv` | Combined **raw** KPI tables (masked) |
-| `data/Dataset/train_val_test_split.csv` | Train / validation / test split |
 | `data/Dataset/KPI_class_bins.csv` | Applied raw cut thresholds and class metadata per KPI type |
 | `data/Dataset/Dataset_Voltage.csv` | Class labels (voltage task) |
 | `data/Dataset/Dataset_Spower.csv` | Class labels (spower task) |
@@ -58,9 +51,13 @@ Set `model.num_classes` to **`len(cuts) + 2`**.
 
 | Function | Description |
 |----------|-------------|
-| `build_datasets()` | Full merge → split → discretize flow |
+| `build_datasets()` | Read combined tables → discretize → write dataset artifacts |
 | `main()` | Calls `build_datasets()` and logs output paths |
 
 ## Related modules
 
-- [`dataset_split`](../modules/dataset_split.md), [`paths`](../modules/paths.md)
+- [`paths`](../modules/paths.md)
+
+## Notes
+
+Combined tables and `train_val_test_split.csv` are produced by [`curves_post_process.py`](curves_post_process.md). Re-run `main.py --from-step curve_process` when split settings change; re-run `main.py --from-step dataset` when KPI cuts change.

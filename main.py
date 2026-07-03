@@ -35,8 +35,9 @@ PIPELINE_STEPS: tuple[tuple[str, Callable[[], None]], ...] = (
     ("training", training.main),
 )
 
-FROM_STEP_INDEX = {name: index for index, (name, _) in enumerate(PIPELINE_STEPS)}
+STEP_INDEX = {name: index for index, (name, _) in enumerate(PIPELINE_STEPS)}
 RESUME_FROM_STEP_CHOICES = tuple(name for name, _ in PIPELINE_STEPS[1:])
+TO_STEP_CHOICES = tuple(name for name, _ in PIPELINE_STEPS)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -56,6 +57,17 @@ def _parse_args() -> argparse.Namespace:
             "(requires outputs from earlier stages; see docs/HowTo.md)."
         ),
     )
+    parser.add_argument(
+        "--to-step",
+        choices=TO_STEP_CHOICES,
+        default=None,
+        metavar="STEP",
+        help=(
+            "Stop after this stage (inclusive). "
+            f"Stages in order: {step_names}. "
+            "Useful to run through curve_process for KPI cut analysis before dataset/training."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -70,7 +82,14 @@ def _dynagnn_version() -> str:
 
 def main() -> None:
     args = _parse_args()
-    start_index = 0 if args.from_step is None else FROM_STEP_INDEX[args.from_step]
+    start_index = 0 if args.from_step is None else STEP_INDEX[args.from_step]
+    end_index = len(PIPELINE_STEPS) - 1 if args.to_step is None else STEP_INDEX[args.to_step]
+
+    if start_index > end_index:
+        raise SystemExit(
+            f"--from-step {args.from_step!r} is after --to-step {args.to_step!r}. "
+            "Choose a start stage that comes before or equal to the stop stage."
+        )
 
     log_path = DATA_DIR / "dynagnn.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -85,10 +104,17 @@ def main() -> None:
     if start_index > 0:
         skipped = ", ".join(name for name, _ in PIPELINE_STEPS[:start_index])
         logger.info("Resuming from step %s (skipping: %s).", args.from_step, skipped)
-    logger.info("Expected outputs when complete: %s, %s", VOLTAGE_MODEL, SPOWER_MODEL)
+    if args.to_step is not None:
+        logger.info("Stopping after step %s.", args.to_step)
+    if end_index == STEP_INDEX["training"]:
+        logger.info("Expected outputs when complete: %s, %s", VOLTAGE_MODEL, SPOWER_MODEL)
 
-    for _, step in PIPELINE_STEPS[start_index:]:
+    for step_name, step in PIPELINE_STEPS[start_index : end_index + 1]:
         step()
+
+    if end_index < STEP_INDEX["training"]:
+        logger.info("DYNAGNN pipeline stopped after %s.", PIPELINE_STEPS[end_index][0])
+        return
 
     if not VOLTAGE_MODEL.is_file() or not SPOWER_MODEL.is_file():
         raise SystemExit(

@@ -5,7 +5,8 @@ Labels components as **disconnected / de-energized** after contingencies using t
 ## Used by
 
 - `main.py` (via `src/curves_post_process.py`)
-- `dataset_construction.py` (KPI masking)
+- `curves_post_process.py` (KPI masking during merge)
+- `dataset_construction.py` (disconnection flags for class-label override)
 
 ## Inputs
 
@@ -35,4 +36,4 @@ Same schema as action tables: `OP`, `Contingency`, component columns with `0`/`1
 
 - **Spower:** generator disconnections from timeline + DYD static ids.
 - **Voltage:** de-energization from processed voltage traces (with all-zero curve filtering).
-- Combined `DISC_voltage.csv` / `DISC_spower.csv` written by `dataset_construction.py`.
+- Combined `DISC_voltage.csv` / `DISC_spower.csv` written by `curves_post_process.py`.

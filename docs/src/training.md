@@ -11,7 +11,7 @@ End-to-end **GAT training**: build a shared PyG dataset (voltage + spower labels
 | Source | Content |
 |--------|---------|
 | `data/Dataset/Dataset_Voltage.csv`, `Dataset_Spower.csv` | Class labels |
-| `data/Dataset/train_val_test_split.csv` | Train/validation/test split (built by dataset construction) |
+| `data/Dataset/train_val_test_split.csv` | Train/validation/test split (built by `curve_process`) |
 | `data/op_graphs/*.pt` | Graph structure and metadata |
 | `data/op_electric_distance/*.csv` | `dz_fault` feature |
 | `config.yaml` | `training.*`, `optuna.*`, `model.num_classes`, `network.country_filter` |
