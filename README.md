@@ -192,7 +192,7 @@ examples/Nordic/
 ```
 
 - **Lines / transformers / loads** — **Fault name** is the IIDM equipment id (e.g. `L1011-1013a`, `Tr1-1041`, `01_1`).
-- **Buses** — Nordic is **bus-breaker**; **Fault name** is a `bus` id (e.g. `1011_131`), not a `busbarSection` id.
+- **Buses** — Nordic is **node-breaker**; **Fault name** is a `busbarSection` id (e.g. `1011_131`), not a `bus` id.
 - **Generators** — **Fault name** is the **dynamic model id** from `Nordic.dyd` (e.g. `g01`, `g02`), not the IIDM static id.
 
 ### Step 1 — Environment

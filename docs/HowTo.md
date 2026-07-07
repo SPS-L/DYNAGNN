@@ -222,8 +222,6 @@ Each `main.py` run still recreates `<data.path>/dynagnn.log` from scratch.
 | **9** | 5207.7 |
 | **10** | 4609.8 |
 
-Operating point **1** is the unmodified Nordic case from the Dynawo `DynaWaltz` repository. Points **2–10** were produced with **Dynawo load-area variation** events run as **dynamic simulations**: a ramped load reduction was applied to **all loads**, and the percentage in the table is the **reduction per load** (e.g. 10% decrease → each load ends at **90%** of its initial value). Generators rebalanced through **primary frequency control** during those runs.
-
 ### Nordic smoke-test `config.yaml` (written by `Nordic_test_setup.py`)
 
 Run:

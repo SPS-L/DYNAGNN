@@ -1,16 +1,4 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<!--
-    Copyright (c) 2023, RTE (http://www.rte-france.com)
-    See AUTHORS.txt
-    All rights reserved.
-    This Source Code Form is subject to the terms of the Mozilla Public
-    License, v. 2.0. If a copy of the MPL was not distributed with this
-    file, you can obtain one at http://mozilla.org/MPL/2.0/.
-    SPDX-License-Identifier: MPL-2.0
-
-    This file is part of Dynawo, a hybrid C++/Modelica open source suite of
-    simulation tools for power systems.
--->
 <dyn:dynamicModelsArchitecture xmlns:dyn="http://www.rte-france.com/dynawo">
   <dyn:blackBoxModel id="g01" lib="GeneratorSynchronousThreeWindingsGoverNordicVRNordic" parFile="Nordic.par" parId="Nordicg01" staticId="g01">
     <dyn:macroStaticRef id="MSR_GeneratorSynchronousThreeWindingsGoverNordicVRNordic"/>
@@ -134,16 +122,16 @@
   <dyn:macroConnect connector="MC_DYNModelOmegaRef-GeneratorSynchronousThreeWindingsGoverNordicVRNordic" id1="OmegaRef" index1="19" id2="g20"/>
   <dyn:macroConnect connector="MC_DYNModelOmegaRef-NetworkBus" id1="OmegaRef" index1="19" id2="NETWORK" name2="BG20__11"/>
   <dyn:macroConnector id="MC_GeneratorSynchronousThreeWindingsGoverNordicVRNordic-NetworkBus">
-    <dyn:connect var1="generator_terminal" var2="@NAME@_ACPIN"/>
-    <dyn:connect var1="generator_switchOffSignal1" var2="@NAME@_switchOff"/>
+    <dyn:connect var1="generator_terminal" var2="@STATIC_ID@@NODE@_ACPIN"/>
+    <dyn:connect var1="generator_switchOffSignal1" var2="@STATIC_ID@@NODE@_switchOff"/>
   </dyn:macroConnector>
   <dyn:macroConnector id="MC_GeneratorSynchronousFourWindingsPmConstVRNordic-NetworkBus">
-    <dyn:connect var1="generator_terminal" var2="@NAME@_ACPIN"/>
-    <dyn:connect var1="generator_switchOffSignal1" var2="@NAME@_switchOff"/>
+    <dyn:connect var1="generator_terminal" var2="@STATIC_ID@@NODE@_ACPIN"/>
+    <dyn:connect var1="generator_switchOffSignal1" var2="@STATIC_ID@@NODE@_switchOff"/>
   </dyn:macroConnector>
   <dyn:macroConnector id="MC_GeneratorSynchronousThreeWindingsPmConstVRNordic-NetworkBus">
-    <dyn:connect var1="generator_terminal" var2="@NAME@_ACPIN"/>
-    <dyn:connect var1="generator_switchOffSignal1" var2="@NAME@_switchOff"/>
+    <dyn:connect var1="generator_terminal" var2="@STATIC_ID@@NODE@_ACPIN"/>
+    <dyn:connect var1="generator_switchOffSignal1" var2="@STATIC_ID@@NODE@_switchOff"/>
   </dyn:macroConnector>
   <dyn:macroConnector id="MC_DYNModelOmegaRef-GeneratorSynchronousThreeWindingsGoverNordicVRNordic">
     <dyn:connect var1="omega_grp_@INDEX@_value" var2="generator_omegaPu"/>
@@ -167,6 +155,11 @@
     <dyn:staticRef var="generator_PGenPu" staticVar="p"/>
     <dyn:staticRef var="generator_QGenPu" staticVar="q"/>
     <dyn:staticRef var="generator_state" staticVar="state"/>
+  </dyn:macroStaticReference>
+  <dyn:macroStaticReference id="Load">
+    <dyn:staticRef var="load_PPu" staticVar="p"/>
+    <dyn:staticRef var="load_QPu" staticVar="q"/>
+    <dyn:staticRef var="load_state" staticVar="state"/>
   </dyn:macroStaticReference>
   <dyn:macroStaticReference id="MSR_GeneratorSynchronousFourWindingsPmConstVRNordic">
     <dyn:staticRef var="generator_PGenPu" staticVar="p"/>

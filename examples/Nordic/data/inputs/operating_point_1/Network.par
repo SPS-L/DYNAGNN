@@ -8,7 +8,7 @@
     file, you can obtain one at http://mozilla.org/MPL/2.0/.
     SPDX-License-Identifier: MPL-2.0
 
-    This file is part of Dynawo, a hybrid C++/Modelica open source suite of
+    This file is part of Dynawo, an hybrid C++/Modelica open source suite of
     simulation tools for power systems.
 -->
 <parametersSet xmlns="http://www.rte-france.com/dynawo">
@@ -24,6 +24,7 @@
     <par type="DOUBLE" name="load_betaLong" value="0"/>
     <par type="BOOL" name="load_isControllable" value="false"/>
     <par type="BOOL" name="load_isRestorative" value="false"/>
+    <par type="BOOL" name="load_isSettable" value="true"/>
     <par type="DOUBLE" name="load_zPMax" value="100"/>
     <par type="DOUBLE" name="load_zQMax" value="100"/>
     <par type="DOUBLE" name="reactance_no_reclosing_delay" value="0"/>
