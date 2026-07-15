@@ -25,6 +25,11 @@ from torch_geometric.loader import DataLoader
 
 from modules.gat_spower_training import run_gat_spower_training
 from modules.gat_voltage_training import run_gat_voltage_training
+from modules.pair_aware_repository import (
+    PAIR_AWARE_ARCHITECTURE,
+    attach_pair_aware_targets,
+    run_pair_aware_repository_training,
+)
 from modules.paths import (
     CONFIG_PATH,
     DATASET_DIR,
@@ -910,6 +915,15 @@ def main() -> None:
     if "num_classes" not in model_cfg:
         raise KeyError("Missing required config key: model.num_classes (in config.yaml)")
     num_classes = int(model_cfg["num_classes"])
+    architecture = str(model_cfg.get("architecture", "gat_coral")).strip().lower()
+    if architecture not in {"gat_coral", PAIR_AWARE_ARCHITECTURE}:
+        raise ValueError(
+            "model.architecture must be gat_coral or pair_aware_gine, "
+            f"got {architecture!r}"
+        )
+    if architecture == PAIR_AWARE_ARCHITECTURE and num_classes != 6:
+        raise ValueError("pair_aware_gine requires model.num_classes=6")
+    logger.info("model.architecture: %s", architecture)
     high_class_threshold = _resolve_high_class_threshold(cfg, num_classes=num_classes)
     logger.info("num_classes: %d", num_classes)
     if high_class_threshold is None:
@@ -962,6 +976,16 @@ def main() -> None:
         logger=logger,
     )
 
+    pair_attachment = None
+    if architecture == PAIR_AWARE_ARCHITECTURE:
+        pair_cfg = training_cfg.get("pair_aware", {}) or {}
+        pair_attachment = attach_pair_aware_targets(
+            graph_dataset,
+            data_dir=DATA_DIR,
+            epsilon=float(pair_cfg.get("epsilon", 1.0e-10)),
+            logger=logger,
+        )
+
     # 3) Apply shared split, then scaling + weighted sampling + loaders (as notebook)
     node_cont_cols = [1, 2, 3, 4, 6]
     batch_size = int(training_cfg.get("batch_size", 16))
@@ -1005,6 +1029,22 @@ def main() -> None:
     )
 
     logger.info("Scaled shared dataset ready. batch_size=%d", batch_size)
+
+    if architecture == PAIR_AWARE_ARCHITECTURE:
+        if pair_attachment is None:
+            raise RuntimeError("Pair-aware attachment was not created")
+        run_pair_aware_repository_training(
+            train_scaled=train_scaled,
+            val_scaled=val_scaled,
+            test_scaled=test_scaled,
+            training_dir=training_dir,
+            model_dir=model_dir,
+            config=cfg,
+            attachment=pair_attachment,
+            logger=logger,
+        )
+        logger.info("All pair-aware training flows completed.")
+        return
 
     # 4) Voltage task: expose y_voltage as y_class
     for d in train_scaled + val_scaled + test_scaled:
