@@ -26,7 +26,19 @@ kpi:
       cuts:  # raw KPI thresholds (ascending)
 
 model:
+  # Use gat_coral for the legacy implementation.
+  architecture: pair_aware_gine
   num_classes: 
+  pair_aware:
+    hidden_dim: 128
+    node_id_dim: 24
+    contingency_id_dim: 32
+    type_dim: 8
+    pair_dim: 32
+    op_context_embedding_dim: 32
+    num_gnn_layers: 3
+    decoder_hidden_dim: 256
+    dropout: 0.15
 
 training:
   epochs: 
@@ -40,6 +52,20 @@ training:
   high_class_threshold: 
   selection_f1_weight:     # composite score: high_recall + w*f1 - w*loss
   selection_loss_weight: 
+
+  pair_aware:
+    op_context_mode: none
+    lr: 0.0002
+    weight_decay: 0.00001
+    classification_weight: 1.0
+    regression_weight: 0.30
+    inactive_gate_weight: 0.20
+    ordinal_weight: 0.10
+    class_weight_mode: sqrt_inverse
+    gate_pos_weight_mode: balanced
+    gate_threshold: 0.50
+    epsilon: 1.0e-10
+    selection_output: auto
 
 optuna:
   n_trials: 
