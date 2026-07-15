@@ -503,10 +503,13 @@ def run_pair_aware_repository_training(
         test_loader = DataLoader(test_scaled, batch_size=batch_size, shuffle=False)
 
         hparams, loss_weights = _pair_configs(config, task)
+        kpi_cfg = config.get("kpi", {}) or {}
+        class_bins_cfg = kpi_cfg.get("class_bins", {}) or {}
+        task_kpi_cfg = class_bins_cfg.get(task, {}) or kpi_cfg.get(task, {}) or {}
         cuts = _float_list(
-            (((config.get("kpi", {}) or {}).get(task, {}) or {}).get("cuts")),
+            task_kpi_cfg.get("cuts"),
             expected=4,
-            label=f"kpi.{task}.cuts",
+            label=f"kpi.class_bins.{task}.cuts",
         )
 
         common_kwargs = dict(
