@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Audit Spower six-class input tables before training."""
 from __future__ import annotations
 import argparse

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Randomized whole-OP cross-validation for the learned six-class Spower GNN.
 
 Each fold holds out complete operating points. The model predicts classes 0..5;
