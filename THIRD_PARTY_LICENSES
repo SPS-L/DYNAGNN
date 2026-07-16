@@ -75,11 +75,11 @@ Copyright (c) 2018–present, Preferred Networks, Inc. and contributors.
 License: MIT
 https://optuna.org/
 
-tqdm
-----
-Copyright (c) 2013–present, tqdm contributors.
-License: MIT and MPL-2.0 (dual-licensed components; see project repository)
-https://github.com/tqdm/tqdm
+SQLAlchemy
+----------
+Copyright (c) 2005–present, SQLAlchemy authors and contributors.
+License: MIT
+https://www.sqlalchemy.org/
 
 PyYAML
 ------

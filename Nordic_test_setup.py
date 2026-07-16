@@ -1,4 +1,7 @@
-#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Sustainable Power Systems Laboratory (https://sps-lab.org/)
+# Part of DYNAGNN: Nordic example smoke-test config writer
+
 from __future__ import annotations
 
 import argparse

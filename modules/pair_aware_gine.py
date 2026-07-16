@@ -1,16 +1,17 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Pair-aware direct six-class GINE model for DYNAGNN.
+# Copyright (c) 2026 Sustainable Power Systems Laboratory (https://sps-lab.org/)
+# Part of DYNAGNN: pair-aware residual GINE model, losses, and training loop
+"""Pair-aware residual GINE model for DYNAGNN.
 
 The GNN is the primary predictor. It receives graph topology and physical
 features, explicit target-component identity, contingency identity/location,
 and optional operating-point context.
 
-The classification head learns all six classes directly:
-- classes 0..4: KPI-derived activity levels;
-- class 5: disconnected or controlled component.
+The classification head learns all configured classes directly:
+- KPI-derived activity levels;
+- flag class: disconnected or controlled component.
 
-Class 5 is never overwritten deterministically during evaluation. The
+The flag class is never overwritten deterministically during evaluation. The
 structural disconnection mask is retained only for target construction and
 audit. No historical KPI/class prior is used.
 """
