@@ -22,14 +22,11 @@ import yaml
 from modules import electric_distance, graph_construction, initialization
 from modules.dynawo_runner import default_dynawo_execution_path
 from modules.paths import CONFIG_PATH, DATA_DIR
-from modules.gat_voltage_training import GAT_V as VoltageModel, coral_predict as coral_predict_voltage
-from modules.gat_spower_training import GAT_S as SpowerModel, coral_predict as coral_predict_spower
 from modules.pair_aware_inference import (
     load_pair_aware_checkpoint,
     load_pair_aware_model,
     predict_pair_aware,
 )
-from modules.pair_aware_repository import PAIR_AWARE_ARCHITECTURE
 from modules.pipeline_logging import build_pipeline_formatter
 
 
@@ -309,23 +306,6 @@ def _build_masks_and_names(metadata: dict, *, allow_countries: set[str]) -> tupl
     return bus_mask, [n for _, n in bus], gen_mask, [n for _, n in gen]
 
 
-def _load_hparams_and_weights(model_dir: Path, *, kind: str) -> tuple[dict, Path]:
-    hp_path = model_dir / f"gat_{kind}_best_hparams.json"
-    w_path = model_dir / f"gat_{kind}_best_model.pt"
-    if not hp_path.exists():
-        raise FileNotFoundError(f"Missing hparams JSON: {hp_path}")
-    if not w_path.exists():
-        raise FileNotFoundError(f"Missing model weights: {w_path}")
-    hparams = json_load(hp_path)
-    return hparams, w_path
-
-
-def json_load(path: Path) -> dict:
-    import json
-
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def _read_scenarios_csv(path: Path) -> list[tuple[int, str]]:
     """Read scenarios CSV: scenario_id (int) + Event (IIDM component name/id for fault_on)."""
     df = pd.read_csv(path)
@@ -434,12 +414,11 @@ def _run_scenario_inference(
     scenario_id: int,
     sample_cpu,
     scenario_dir: Path,
-    model_v: VoltageModel,
-    model_s: SpowerModel,
+    model_v,
+    model_s,
     device: torch.device,
     v_hp: dict,
     s_hp: dict,
-    architecture: str,
     logger: logging.Logger,
 ) -> tuple[int, int]:
     """Run voltage and spower forward passes in parallel; write CSVs under scenario_dir."""
@@ -447,21 +426,12 @@ def _run_scenario_inference(
     def _predict_voltage() -> int:
         rows: list[dict] = []
         with torch.no_grad():
-            if architecture == PAIR_AWARE_ARCHITECTURE:
-                pred_v = predict_pair_aware(
-                    model=model_v,
-                    sample_cpu=sample_cpu,
-                    checkpoint=v_hp,
-                    device=device,
-                )
-            else:
-                sample = sample_cpu.to(device)
-                logits_v = model_v(
-                    sample.x, sample.edge_index, sample.edge_attr, sample.bus_node_mask
-                )
-                pred_v = coral_predict_voltage(
-                    logits_v, threshold=float(v_hp["coral_prediction_threshold"])
-                )
+            pred_v = predict_pair_aware(
+                model=model_v,
+                sample_cpu=sample_cpu,
+                checkpoint=v_hp,
+                device=device,
+            )
             names_v = list(sample_cpu.bus_node_names)
             for comp_name, yp in zip(names_v, pred_v.detach().cpu().numpy().astype(int).tolist(), strict=False):
                 rows.append({"component_name": str(comp_name), "predicted_class": int(yp)})
@@ -473,21 +443,12 @@ def _run_scenario_inference(
     def _predict_spower() -> int:
         rows: list[dict] = []
         with torch.no_grad():
-            if architecture == PAIR_AWARE_ARCHITECTURE:
-                pred_s = predict_pair_aware(
-                    model=model_s,
-                    sample_cpu=sample_cpu,
-                    checkpoint=s_hp,
-                    device=device,
-                )
-            else:
-                sample = sample_cpu.to(device)
-                logits_s = model_s(
-                    sample.x, sample.edge_index, sample.edge_attr, sample.gen_node_mask
-                )
-                pred_s = coral_predict_spower(
-                    logits_s, threshold=float(s_hp["coral_prediction_threshold"])
-                )
+            pred_s = predict_pair_aware(
+                model=model_s,
+                sample_cpu=sample_cpu,
+                checkpoint=s_hp,
+                device=device,
+            )
             names_s = list(sample_cpu.gen_node_names)
             for comp_name, yp in zip(names_s, pred_s.detach().cpu().numpy().astype(int).tolist(), strict=False):
                 rows.append({"component_name": str(comp_name), "predicted_class": int(yp)})
@@ -531,14 +492,8 @@ def main() -> None:
     if "num_classes" not in model_cfg:
         raise KeyError("Missing required config key: model.num_classes (in config.yaml)")
     num_classes = int(model_cfg["num_classes"])
-    architecture = str(model_cfg.get("architecture", "gat_coral")).strip().lower()
-    if architecture not in {"gat_coral", PAIR_AWARE_ARCHITECTURE}:
-        raise ValueError(
-            "model.architecture must be gat_coral or pair_aware_gine, "
-            f"got {architecture!r}"
-        )
-    if architecture == PAIR_AWARE_ARCHITECTURE and num_classes != 6:
-        raise ValueError("pair_aware_gine requires model.num_classes=6")
+    if num_classes != 6:
+        raise ValueError("The pair-aware GINE inference pipeline requires model.num_classes=6")
 
     # Determine initialization duration
     infer_cfg = cfg.get("inference", {}) or {}
@@ -642,62 +597,23 @@ def main() -> None:
     node_cont_cols = [1, 2, 3, 4, 6]  # matches training (includes dz_fault)
     edge_cont_cols = _edge_cont_cols_from_metadata(metadata)
 
-    if architecture == PAIR_AWARE_ARCHITECTURE:
-        v_weights = model_dir / "pair_aware_voltage_best_model.pt"
-        s_weights = model_dir / "pair_aware_spower_best_model.pt"
-        v_hp = load_pair_aware_checkpoint(v_weights, expected_task="voltage")
-        s_hp = load_pair_aware_checkpoint(s_weights, expected_task="spower")
-    else:
-        v_hp = json_load(model_dir / "gat_voltage_best_hparams.json")
-        s_hp = json_load(model_dir / "gat_spower_best_hparams.json")
-        v_weights = model_dir / "gat_voltage_best_model.pt"
-        s_weights = model_dir / "gat_spower_best_model.pt"
-
-    in_channels = int(data_base.x.shape[1]) + 1  # append dz_fault before scaling
-    edge_dim = int(data_base.edge_attr.shape[1])
+    v_weights = model_dir / "voltage_best_model.pt"
+    s_weights = model_dir / "spower_best_model.pt"
+    v_hp = load_pair_aware_checkpoint(v_weights, expected_task="voltage")
+    s_hp = load_pair_aware_checkpoint(s_weights, expected_task="spower")
 
     def _load_models():
-        if architecture == PAIR_AWARE_ARCHITECTURE:
-            model_v = load_pair_aware_model(v_hp, device)
-            model_s = load_pair_aware_model(s_hp, device)
-            return model_v, model_s
-
-        model_v = VoltageModel(
-            in_channels=in_channels,
-            edge_dim=edge_dim,
-            hidden_channels=int(v_hp["hidden_channels"]),
-            hidden_dim=int(v_hp["hidden_dim"]),
-            num_layers=int(v_hp["num_layers"]),
-            num_gnn_layers=int(v_hp["num_gnn_layers"]),
-            num_classes=num_classes,
-            num_heads=int(v_hp["num_heads"]),
-            dropout=float(v_hp["dropout"]),
-        ).to(device)
-        model_v.load_state_dict(torch.load(v_weights, map_location=device, weights_only=False))
-        model_v.eval()
-
-        model_s = SpowerModel(
-            in_channels=in_channels,
-            edge_dim=edge_dim,
-            hidden_channels=int(s_hp["hidden_channels"]),
-            hidden_dim=int(s_hp["hidden_dim"]),
-            num_layers=int(s_hp["num_layers"]),
-            num_gnn_layers=int(s_hp["num_gnn_layers"]),
-            num_classes=num_classes,
-            num_heads=int(s_hp["num_heads"]),
-            dropout=float(s_hp["dropout"]),
-        ).to(device)
-        model_s.load_state_dict(torch.load(s_weights, map_location=device, weights_only=False))
-        model_s.eval()
-        return model_v, model_s
+        return (
+            load_pair_aware_model(v_hp, device),
+            load_pair_aware_model(s_hp, device),
+        )
 
     model_v, model_s = _run_step(
         logger,
         "load_models",
         _load_models,
         on_success=lambda _: [
-            f"architecture={architecture}, voltage={v_weights.name}, "
-            f"spower={s_weights.name}, num_classes={num_classes}",
+            f"voltage={v_weights.name}, spower={s_weights.name}, num_classes={num_classes}"
         ],
     )
 
@@ -745,7 +661,6 @@ def main() -> None:
                 device=device,
                 v_hp=v_hp,
                 s_hp=s_hp,
-                architecture=architecture,
                 logger=logger,
             )
         except Exception as exc:

@@ -1,17 +1,18 @@
 # DYNAGNN version history
 
-This note documents KPI normalization and class-labeling methodology across **v1.0**, **v1.1**, and **v1.11** (current). Notation: $x$ denotes a raw KPI value for one component in one scenario; flagged or invalid cells are excluded from the steps below.
+This note documents KPI labeling methodology and the training/inference model stack across **v1.0**, **v1.1**, **v1.11**, and **v1.2** (current). Notation: $x$ denotes a raw KPI value for one component in one scenario; flagged or invalid cells are excluded from the labeling steps below.
 
 ---
 
 ## Pipeline order
 
-| Stage | Version 1.0 | Version 1.1 | Version 1.11 |
-|-------|-------------|-------------|--------------|
-| Combined KPI tables | Raw values, then min–max normalized in place | Raw values only | Raw values only |
-| Train / validation / test split | Built **after** class labeling, during training | Built **before** labeling, from raw voltage scenarios | Same as v1.1 |
-| Class datasets | Produced in dataset construction | Same stage; log10 + z-score + range cuts | Same stage; **fixed raw KPI cuts** |
-| Labeling metadata | Min / max per KPI table | $\mu$, $\sigma$, training z-cut thresholds | Raw cut thresholds in `KPI_class_bins.csv` |
+| Stage | Version 1.0 | Version 1.1 | Version 1.11 | Version 1.2 |
+|-------|-------------|-------------|--------------|-------------|
+| Combined KPI tables | Raw values, then min–max normalized in place | Raw values only | Raw values only | Same as v1.11 |
+| Train / validation / test split | Built **after** class labeling, during training | Built **before** labeling, from raw voltage scenarios | Same as v1.1 | Same as v1.11 |
+| Class datasets | Produced in dataset construction | Same stage; log10 + z-score + range cuts | Same stage; **fixed raw KPI cuts** | Same labeling as v1.11 |
+| Labeling metadata | Min / max per KPI table | $\mu$, $\sigma$, training z-cut thresholds | Raw cut thresholds in `KPI_class_bins.csv` | Same as v1.11 |
+| Activity model | — | GAT + CORAL ordinal head | GAT + CORAL ordinal head | **Pair-aware residual GINE** (direct multi-class) |
 
 ---
 
@@ -117,7 +118,7 @@ Version 1.1 stored $\mu$, $\sigma$, the $\tau_j$, and fitted scalers under a ded
 
 ---
 
-## Version 1.11 — fixed raw KPI class cuts (current)
+## Version 1.11 — fixed raw KPI class cuts
 
 ### Rationale
 
@@ -129,7 +130,7 @@ There is no need for normalization, scaling, or distribution-fitting artifacts b
 
 ### Class labeling
 
-Configuration supplies a sorted list of **raw KPI cut thresholds** (e.g. $10^{-7}$, $7.5\times10^{-7}$, $7.5\times10^{-6}$, $1.5\times10^{-5}$). For each finite raw KPI value $x$:
+Configuration supplies a sorted list of **raw KPI cut thresholds** (e.g. $10^{-6}$, $2.25\times10^{-5}$, $3\times10^{-4}$, $5.625\times10^{-4}$). For each finite raw KPI value $x$:
 
 | Class | Rule (example with four cuts) |
 |-------|-------------------------------|
@@ -156,12 +157,77 @@ Cuts are **fixed in configuration** on the raw KPI scale and do not depend on th
 
 **Removed:** `modules/normalization.py`, `modules/kpi_visualization.py`, `<data.path>/normalization/`, and `Dataset/KPI_visualization/`.
 
+### Model stack in v1.11
+
+Training still used a **GAT** encoder with a **CORAL** ordinal classification head, Optuna-tuned GAT capacity, and high-class composite selection (`high_recall` / `high_f1` / loss). Deployment checkpoints were named `gat_voltage_best_model.pt` and `gat_spower_best_model.pt`.
+
 ---
 
-## Side-by-side summary
+## Version 1.2 — pair-aware residual GINE (current)
 
-| Aspect | v1.0 | v1.1 | v1.11 |
-|--------|------|------|-------|
+### What changed
+
+v1.2 keeps the **v1.11 KPI labeling** (fixed raw cuts → KPI severity classes plus one flag class) and the same Dynawo → graph → KPI → dataset pipeline stages. The upgrade replaces the **activity model and training method**:
+
+| Aspect | v1.11 | v1.2 |
+|--------|-------|------|
+| Encoder | GAT | Residual edge-aware **GINE** |
+| Head | CORAL ordinal | **Direct multi-class** logits + inactive gate + log-KPI regression |
+| Conditioning | Graph features + `fault_on` / `dz_fault` | Same electrical features **plus** target-id / contingency-id embeddings and explicit **target–contingency** pair interactions |
+| Architecture choice | Single GAT-CORAL path | Pair-aware GINE only (no GAT-CORAL fallback) |
+| Optuna studies | Shared-style GAT hparams (heads, CORAL threshold, under-penalty, …) | **Independent** Voltage and Spower studies; capacity + optimizer only |
+| Selection score | `high_recall + w_f1·high_f1 − w_loss·loss` | `0.40·balanced_acc + 0.30·macro_f1 + 0.20·acc + 0.10·within_one` |
+| Checkpoints | `gat_voltage_best_model.pt`, `gat_spower_best_model.pt` | `voltage_best_model.pt`, `spower_best_model.pt` |
+| External inference I/O | One class per component | **Unchanged** (`prediction_voltage.csv` / `prediction_spower.csv`) |
+
+### Method (pair-aware GINE)
+
+`PairAwareGINE` predicts configured activity classes **directly** (`0 … num_classes−1`, with `num_classes = len(cuts) + 2`). The GNN is the primary predictor. It receives:
+
+- graph topology and physical node/edge features (including `fault_on` and electrical distance to the fault);
+- explicit **target-component** identity embeddings;
+- **contingency** identity / location encoding and event context;
+- graph-level mean and max pooling.
+
+A residual GINE stack with jumping knowledge feeds a shared decoder that produces:
+
+1. **class logits** over all configured classes (KPI activity levels plus the flag class for disconnected / controlled components);
+2. an **inactive (class-0) gate**;
+3. an auxiliary **log-KPI** regression head (supervised where a finite KPI exists).
+
+The flag class is **learned** — there is no deterministic post-hoc override from disconnection flags at evaluation/inference. Structural disconnection masks are retained for target construction and audit only. No historical KPI/class prior is used.
+
+A separate operating-point context encoder is **not** used (`op_context_embedding_dim` is not an Optuna parameter). OP information remains available through node/edge electrical features and graph mean/max pooling.
+
+### Configuration
+
+- **Fixed** under `training.pair_aware`: loss weights (`classification_weight`, `regression_weight`, `inactive_gate_weight`, `ordinal_weight`), `class_weight_mode`, `gate_pos_weight_mode`, `gate_threshold`, `epsilon`, `selection_output`.
+- **Tuned** under `optuna.hparams` only: `hidden_dim`, `node_id_dim`, `contingency_id_dim`, `type_dim`, `pair_dim`, `num_gnn_layers`, `decoder_hidden_dim`, `dropout`, `lr`, `weight_decay`.
+- Set `model.num_classes` to **`len(cuts) + 2`** so it matches the KPI cuts and one flag class.
+
+Pipeline entry points are unchanged: `main.py` → `src/training.py` → `modules/voltage_training.py` / `modules/spower_training.py`. Inference remains `DYNAGNN.py` with the same CLI and CSV outputs.
+
+### Nordic example
+
+Operating point **10** was removed from the bundled Nordic example (folder and docs). The example now ships **nine** operating points (`operating_point_1` … `operating_point_9`). The smoke-test config uses four KPI cuts → `num_classes: 6`.
+
+### Artifacts (v1.2)
+
+| Path | Role |
+|------|------|
+| `data/model/voltage_best_model.pt`, `spower_best_model.pt` | Deployment checkpoints (vocabularies, cuts, selected decode path, weights) |
+| `data/model/voltage_best_hparams.json`, `spower_best_hparams.json` | Checkpoint metadata without weights |
+| `data/model/x_scaler.pkl`, `edge_attr_scaler.pkl` | Train-fit feature scalers |
+| `data/training/<task>/optuna_*.sqlite3`, `optuna_trials.csv` | Per-task Optuna studies |
+
+**Removed from the active stack:** GAT-CORAL training/decoding modules, `gat_*_best_model.pt` naming, CORAL Optuna knobs (`under_penalty_lambda`, `coral_prediction_threshold`, …), and high-class selection weights (`high_class_threshold`, `selection_f1_weight`, `selection_loss_weight`).
+
+---
+
+## Side-by-side summary (labeling)
+
+| Aspect | v1.0 | v1.1 | v1.11 / v1.2 labeling |
+|--------|------|------|------------------------|
 | Transform before labeling | None | Zero replace, then $x' = \log_{10}(x)$ | None |
 | Scaling | Min–max on **all** data → $\tilde{x} \in [0,1]$ | Train-only z-score on $\log_{10}(x)$ | None |
 | Quantity used for bins | $\tilde{x}$ | $z$ | Raw $x$ |
@@ -181,7 +247,7 @@ Cuts are **fixed in configuration** on the raw KPI scale and do not depend on th
 
 **v1.1** with $f = (0.5,\, 0.8,\, 0.9)$: on training $z$, take $z_{\min}$ and $z_{\max}$; $\tau_j = z_{\min} + f_j (z_{\max} - z_{\min})$. Class 0 is $z \le \tau_1$, class 1 is $(\tau_1, \tau_2]$, etc. The same $\tau_j$ are applied to validation and test.
 
-**v1.11** with raw cuts $\tau = (10^{-7},\, 7.5\times10^{-7},\, 7.5\times10^{-6})$ (three cuts, four KPI classes): class 0 is $x \le 10^{-7}$, class 1 is $(10^{-7},\, 7.5\times10^{-7}]$, etc., on the **raw** KPI from curve post-processing. With a fourth cut $1.5\times10^{-5}$, class 4 is $x > 1.5\times10^{-5}$ and **total classes** $= 6$ including the flag class.
+**v1.11 / v1.2** with raw cuts $\tau = (10^{-6},\, 2.25\times10^{-5},\, 3\times10^{-4})$ (three cuts, four KPI classes): class 0 is $x \le 10^{-6}$, class 1 is $(10^{-6},\, 2.25\times10^{-5}]$, etc., on the **raw** KPI from curve post-processing. With a fourth cut $5.625\times10^{-4}$ (as in the Nordic example), class 4 is $x > 5.625\times10^{-4}$ and **total classes** $= 6$ including the flag class.
 
 In all versions, flag cells receive class $K+1$.
 
@@ -192,6 +258,8 @@ In all versions, flag cells receive class $K+1$.
 **v1.0 → v1.1:** Replace interval-style cut values (e.g. $0.33$, $0.66$) with activity fractions along the training z range (e.g. $0.5$, $0.8$, $0.9$). Set `model.num_classes` to $|\{f_j\}| + 2$. Re-run dataset construction so splits, scalers, cuts, and labels are regenerated consistently.
 
 **v1.1 → v1.11:** Replace activity fractions in `kpi.class_bins.*.cuts` with **raw KPI thresholds** (strictly increasing positive values). Set `dynagnn.version` to `1.11` and `model.num_classes` to `len(cuts) + 2`. Re-run from `dataset` (or the full pipeline). Remove obsolete `normalization/` and `Dataset/KPI_visualization/` folders if present.
+
+**v1.11 → v1.2:** Keep `kpi.class_bins.*.cuts` and set `model.num_classes` to `len(cuts) + 2`. Replace GAT/CORAL training keys with `training.pair_aware` and the pair-aware `optuna.hparams` list. Set `dynagnn.version` to `1.2`. Retrain from `training` (or full pipeline). Load new checkpoints `voltage_best_model.pt` / `spower_best_model.pt` — old `gat_*` weights are not compatible. Inference CLI and prediction CSV layout are unchanged.
 
 ---
 
@@ -209,6 +277,12 @@ Version 1.1 addressed this by describing dynamics through **statistical behavior
 
 ### v1.1 → v1.11
 
-Version 1.1 still introduced an intermediate continuous representation ($z$-scores) and train-dependent cut placement before discretization. For a **classification** pipeline, that step is redundant: the KPI itself already ranks dynamic severity on a physically meaningful scale, and the class index is the quantity the GAT is trained to predict.
+Version 1.1 still introduced an intermediate continuous representation ($z$-scores) and train-dependent cut placement before discretization. For a **classification** pipeline, that step is redundant: the KPI itself already ranks dynamic severity on a physically meaningful scale, and the class index is the quantity the model is trained to predict.
 
 Version 1.11 assigns labels **directly from raw KPI values** using fixed thresholds chosen for the problem domain. Severity is encoded once—at labeling time—without log transforms, scalers, or split-specific bin fitting. The supervision signal is easier to interpret, reproducible across datasets, and independent of which contingencies happen to dominate the training distribution.
+
+### v1.11 → v1.2
+
+Version 1.11 still predicted activity with a GAT + CORAL stack that treated ordinal ranks as cumulative thresholds and selected checkpoints mainly for high-severity recall. That design did not explicitly condition each target component on the **identity of the contingency** it is paired with, and CORAL decoding plus high-class heuristics added moving parts that were hard to align with a fixed multi-class labeling scheme.
+
+Version 1.2 replaces that stack with a **pair-aware residual GINE**: residual edge-aware message passing, target and contingency embeddings, and a direct multi-class head (plus gate and log-KPI auxiliaries). Voltage and Spower are tuned in **separate Optuna studies** with capacity/optimizer search only; loss construction stays fixed under `training.pair_aware`. The external inference contract stays one predicted class per component, while the learned representation becomes explicitly event- and target-conditioned.

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Sustainable Power Systems Laboratory (https://sps-lab.org/)
-# Part of DYNAGNN: GAT model training pipeline
+# Part of DYNAGNN: pair-aware GINE training pipeline
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -20,16 +20,10 @@ import torch
 import yaml
 import joblib
 from sklearn.preprocessing import StandardScaler
-from torch.utils.data import WeightedRandomSampler
-from torch_geometric.loader import DataLoader
 
-from modules.gat_spower_training import run_gat_spower_training
-from modules.gat_voltage_training import run_gat_voltage_training
-from modules.pair_aware_repository import (
-    PAIR_AWARE_ARCHITECTURE,
-    attach_pair_aware_targets,
-    run_pair_aware_repository_training,
-)
+from modules.pair_aware_training import attach_pair_aware_targets
+from modules.spower_training import run_spower_training
+from modules.voltage_training import run_voltage_training
 from modules.paths import (
     CONFIG_PATH,
     DATASET_DIR,
@@ -47,26 +41,6 @@ if str(PROJECT_ROOT) not in sys.path:
 def _load_config(path: Path = CONFIG_PATH) -> dict:
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
-
-
-def _resolve_high_class_threshold(config: dict, *, num_classes: int) -> Optional[int]:
-    """Minimum class index for high-severity handling, or None to disable.
-
-    When None: uniform train shuffle (no WeightedRandomSampler) and no high-class under-penalty.
-    """
-    training_cfg = config.get("training", {}) or {}
-    raw = training_cfg.get("high_class_threshold")
-    if raw is None:
-        return None
-    if isinstance(raw, str) and raw.strip().lower() in {"", "none", "null"}:
-        return None
-
-    threshold = int(raw)
-    if not (0 <= threshold < int(num_classes)):
-        raise ValueError(
-            f"training.high_class_threshold must be in [0, {int(num_classes) - 1}] or null, got {threshold}"
-        )
-    return threshold
 
 
 def _set_seed(seed: int) -> None:
@@ -811,38 +785,6 @@ def _scale_split(
     return scaled
 
 
-def _compute_graph_weights_voltage(data_list: Sequence, high_thresh: int, floor: float = 0.1) -> torch.Tensor:
-    weights: list[float] = []
-    for d in data_list:
-        y = d.y_class[d.bus_node_mask]
-        n_high = int((y >= int(high_thresh)).sum().item())
-        weights.append(max(float(n_high), float(floor)))
-    return torch.tensor(weights, dtype=torch.double)
-
-
-def _compute_graph_weights_spower(data_list: Sequence, high_thresh: int, floor: float = 0.1) -> torch.Tensor:
-    weights: list[float] = []
-    for d in data_list:
-        y = d.y_class[d.gen_node_mask]
-        n_high = int((y >= int(high_thresh)).sum().item())
-        weights.append(max(float(n_high), float(floor)))
-    return torch.tensor(weights, dtype=torch.double)
-
-
-def _make_train_loader(
-    train_scaled: Sequence,
-    *,
-    batch_size: int,
-    high_class_threshold: Optional[int],
-    compute_weights,
-):
-    if high_class_threshold is None:
-        return DataLoader(train_scaled, batch_size=batch_size, shuffle=True)
-    weights = compute_weights(train_scaled, high_class_threshold, floor=0.1)
-    sampler = WeightedRandomSampler(weights=weights, num_samples=len(weights), replacement=True)
-    return DataLoader(train_scaled, batch_size=batch_size, sampler=sampler)
-
-
 def _split_graph_dataset_by_csv(graph_dataset: Sequence, split_csv: Path) -> tuple[list, list, list]:
     split_df = pd.read_csv(split_csv)
     required = {"split", "operating_point", "contingency"}
@@ -892,7 +834,6 @@ def _split_graph_dataset_by_csv(graph_dataset: Sequence, split_csv: Path) -> tup
 def main() -> None:
     cfg = _load_config()
     training_cfg = cfg.get("training", {}) or {}
-    optuna_cfg = cfg.get("optuna", {}) or {}
     model_cfg = cfg.get("model", {}) or {}
     network_cfg = cfg.get("network", {}) or {}
     country_filter = network_cfg.get("country_filter", []) or []
@@ -915,21 +856,10 @@ def main() -> None:
     if "num_classes" not in model_cfg:
         raise KeyError("Missing required config key: model.num_classes (in config.yaml)")
     num_classes = int(model_cfg["num_classes"])
-    architecture = str(model_cfg.get("architecture", "gat_coral")).strip().lower()
-    if architecture not in {"gat_coral", PAIR_AWARE_ARCHITECTURE}:
-        raise ValueError(
-            "model.architecture must be gat_coral or pair_aware_gine, "
-            f"got {architecture!r}"
-        )
-    if architecture == PAIR_AWARE_ARCHITECTURE and num_classes != 6:
-        raise ValueError("pair_aware_gine requires model.num_classes=6")
-    logger.info("model.architecture: %s", architecture)
-    high_class_threshold = _resolve_high_class_threshold(cfg, num_classes=num_classes)
+    if num_classes != 6:
+        raise ValueError("The pair-aware GINE pipeline requires model.num_classes=6")
+    logger.info("Model: pair-aware residual GINE")
     logger.info("num_classes: %d", num_classes)
-    if high_class_threshold is None:
-        logger.info("training.high_class_threshold: disabled (no weighted train sampling)")
-    else:
-        logger.info("training.high_class_threshold: %d", high_class_threshold)
 
     # Paths expected by notebooks (but rooted in this project)
     dataset_voltage_csv = DATASET_DIR / "Dataset_Voltage.csv"
@@ -976,17 +906,15 @@ def main() -> None:
         logger=logger,
     )
 
-    pair_attachment = None
-    if architecture == PAIR_AWARE_ARCHITECTURE:
-        pair_cfg = training_cfg.get("pair_aware", {}) or {}
-        pair_attachment = attach_pair_aware_targets(
-            graph_dataset,
-            data_dir=DATA_DIR,
-            epsilon=float(pair_cfg.get("epsilon", 1.0e-10)),
-            logger=logger,
-        )
+    pair_cfg = training_cfg.get("pair_aware", {}) or {}
+    pair_attachment = attach_pair_aware_targets(
+        graph_dataset,
+        data_dir=DATA_DIR,
+        epsilon=float(pair_cfg.get("epsilon", 1.0e-10)),
+        logger=logger,
+    )
 
-    # 3) Apply shared split, then scaling + weighted sampling + loaders (as notebook)
+    # 3) Apply shared split and fit feature scalers on the training set only.
     node_cont_cols = [1, 2, 3, 4, 6]
     batch_size = int(training_cfg.get("batch_size", 16))
     train_all, val_all, test_all = _split_graph_dataset_by_csv(graph_dataset, split_csv)
@@ -1030,70 +958,32 @@ def main() -> None:
 
     logger.info("Scaled shared dataset ready. batch_size=%d", batch_size)
 
-    if architecture == PAIR_AWARE_ARCHITECTURE:
-        if pair_attachment is None:
-            raise RuntimeError("Pair-aware attachment was not created")
-        run_pair_aware_repository_training(
-            train_scaled=train_scaled,
-            val_scaled=val_scaled,
-            test_scaled=test_scaled,
-            training_dir=training_dir,
-            model_dir=model_dir,
-            config=cfg,
-            attachment=pair_attachment,
-            logger=logger,
-        )
-        logger.info("All pair-aware training flows completed.")
-        return
-
-    # 4) Voltage task: expose y_voltage as y_class
-    for d in train_scaled + val_scaled + test_scaled:
-        d.y_class = d.y_voltage
-    train_loader_v = _make_train_loader(
-        train_scaled,
-        batch_size=batch_size,
-        high_class_threshold=high_class_threshold,
-        compute_weights=_compute_graph_weights_voltage,
-    )
-    val_loader_v = DataLoader(val_scaled, batch_size=batch_size, shuffle=False)
-    test_loader_v = DataLoader(test_scaled, batch_size=batch_size, shuffle=False)
-
-    logger.info("Starting GAT Voltage training flow")
-    run_gat_voltage_training(
-        train_loader=train_loader_v,
-        val_loader=val_loader_v,
-        test_loader=test_loader_v,
+    logger.info("Starting Voltage pair-aware GINE Optuna training")
+    voltage_result = run_voltage_training(
+        train_scaled=train_scaled,
+        val_scaled=val_scaled,
+        test_scaled=test_scaled,
         training_dir=training_dir,
         model_dir=model_dir,
         config=cfg,
-        high_class_threshold=high_class_threshold,
+        attachment=pair_attachment,
         logger=logger,
     )
 
-    # 5) Spower task: expose y_spower as y_class
-    for d in train_scaled + val_scaled + test_scaled:
-        d.y_class = d.y_spower
-    train_loader_s = _make_train_loader(
-        train_scaled,
-        batch_size=batch_size,
-        high_class_threshold=high_class_threshold,
-        compute_weights=_compute_graph_weights_spower,
-    )
-    val_loader_s = DataLoader(val_scaled, batch_size=batch_size, shuffle=False)
-    test_loader_s = DataLoader(test_scaled, batch_size=batch_size, shuffle=False)
-
-    logger.info("Starting GAT Spower training flow")
-    run_gat_spower_training(
-        train_loader=train_loader_s,
-        val_loader=val_loader_s,
-        test_loader=test_loader_s,
+    logger.info("Starting Spower pair-aware GINE Optuna training")
+    spower_result = run_spower_training(
+        train_scaled=train_scaled,
+        val_scaled=val_scaled,
+        test_scaled=test_scaled,
         training_dir=training_dir,
         model_dir=model_dir,
         config=cfg,
-        high_class_threshold=high_class_threshold,
+        attachment=pair_attachment,
         logger=logger,
     )
 
-    # 5) Run model flows
-    logger.info("All training flows completed.")
-
+    (model_dir / "training_summary.json").write_text(
+        json.dumps({"voltage": voltage_result, "spower": spower_result}, indent=2),
+        encoding="utf-8",
+    )
+    logger.info("All pair-aware GINE Optuna training flows completed.")

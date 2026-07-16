@@ -1,6 +1,6 @@
 # `src/training.py`
 
-End-to-end **GAT training**: build a shared PyG dataset (voltage + spower labels), append electrical-distance features, train/val/test split, scaler fitting, Optuna hyperparameter search, and checkpoint export.
+End-to-end **pair-aware GINE training**: build a shared PyG dataset (voltage + spower labels), append electrical-distance features, attach pair-aware targets, train/val/test split, scaler fitting, independent Optuna studies per task, and deployment checkpoint export.
 
 ## Invoked by
 
@@ -10,34 +10,81 @@ End-to-end **GAT training**: build a shared PyG dataset (voltage + spower labels
 
 | Source | Content |
 |--------|---------|
-| `data/Dataset/Dataset_Voltage.csv`, `Dataset_Spower.csv` | Class labels |
+| `data/Dataset/Dataset_Voltage.csv`, `Dataset_Spower.csv` | Class labels (`0 … num_classes−1`) |
 | `data/Dataset/train_val_test_split.csv` | Train/validation/test split (built by `curve_process`) |
+| `data/KPI/KPI_voltage.csv`, `KPI_spower.csv` | Raw KPI values (for log-KPI regression targets) |
+| `data/Disconnections/DISC_voltage.csv`, `DISC_spower.csv` | Structural flag-class masks |
 | `data/op_graphs/*.pt` | Graph structure and metadata |
 | `data/op_electric_distance/*.csv` | `dz_fault` feature |
-| `config.yaml` | `training.*`, `optuna.*`, `model.num_classes`, `network.country_filter` |
+| `config.yaml` | `training.*` (incl. `pair_aware`), `optuna.*`, `model.num_classes`, `kpi.class_bins.*.cuts`, `network.country_filter` |
 
 ## Outputs
 
 | Path | Content |
 |------|---------|
-| `data/model/x_scaler.pkl`, `edge_attr_scaler.pkl` | Feature scalers |
-| `data/model/gat_voltage_best_model.pt`, `gat_spower_best_model.pt` | Checkpoints |
-| `data/model/gat_*_best_hparams.json` | Best hyperparameters per task |
-| `data/training/voltage/`, `data/training/spower/` | Optuna CSV, loss curves, test figures, checkpoints |
+| `data/model/x_scaler.pkl`, `edge_attr_scaler.pkl` | Feature scalers (train-fit only) |
+| `data/model/voltage_best_model.pt`, `spower_best_model.pt` | Deployment checkpoints |
+| `data/model/voltage_best_hparams.json`, `spower_best_hparams.json` | Checkpoint metadata (hparams, vocabs, cuts, …) |
+| `data/model/training_summary.json` | Best-trial summary for both tasks |
+| `data/training/voltage/`, `data/training/spower/` | Optuna SQLite/CSV, trial folders, test evaluation artifacts |
 
 ## Main entry point
 
 | Function | Description |
 |----------|-------------|
-| `main()` | Full training flow (voltage then spower) |
+| `main()` | Full training flow (shared graph build → voltage Optuna → spower Optuna) |
 
 ## Flow (summary)
 
 1. Load class-label datasets and the split CSV (must already exist from dataset construction).
-2. Build shared `graph_dataset` with `y_voltage` and `y_spower` masks; resolve each row’s **Contingency** (column 2) on the graph and set `fault_on` (see [Event lookup](#event-lookup-and-fault_on-placement)).
-3. Append log electrical distance from fault to each node.
-4. Fit scalers on train split; build weighted loaders if `high_class_threshold` is set.
-5. `run_gat_voltage_training()` then `run_gat_spower_training()` (Optuna maximizes validation composite score `high_recall + selection_f1_weight·high_f1 − selection_loss_weight·loss`).
+2. Build shared `graph_dataset` with `y_voltage` / `y_spower` masks; resolve each row’s **Contingency** on the graph and set `fault_on` (see [Event lookup](#event-lookup-and-fault_on-placement)).
+3. Append log electrical distance from fault to each node (`dz_fault`).
+4. Attach pair-aware tensors via `attach_pair_aware_targets()`: shared node/contingency vocabularies, event masks, log-KPI targets, structural flag-class masks.
+5. Fit feature scalers on the **train** split only; scale all splits.
+6. `run_voltage_training()` then `run_spower_training()` — each runs its own Optuna study maximizing the validation [selection score](#training-selection-score).
+
+Set `model.num_classes` to **`len(cuts) + 2`** so it matches the KPI cuts and one flag class from dataset construction.
+
+## Model (pair-aware residual GINE)
+
+DYNAGNN uses one model family: **`PairAwareGINE`** (`modules/pair_aware_gine.py`). There is no architecture selector and no legacy GAT-CORAL path.
+
+The model predicts activity classes **directly** (`0 … num_classes−1`) and uses:
+
+- residual edge-aware **GINE** message passing;
+- concatenation of the initial node representation and all GINE-layer outputs (jumping knowledge);
+- **target-component** and **contingency** identity embeddings;
+- event encoding and explicit target–contingency pair interactions;
+- graph mean/max context;
+- a multi-class head, a class-0 (inactive) gate, and an auxiliary log-KPI regression head.
+
+Operating-point information enters through node/edge electrical features and graph-level pooling. A separate OP-context encoder is **not** used.
+
+Task entry points:
+
+- [`voltage_training`](../modules/voltage_training.md) → buses (`bus_node_mask`)
+- [`spower_training`](../modules/spower_training.md) → generators (`gen_node_mask`)
+
+Both call [`pair_aware_training.run_task_training()`](../modules/pair_aware_training.md).
+
+### Loss (fixed under `training.pair_aware`)
+
+| Weight key | Role |
+|------------|------|
+| `classification_weight` | Cross-entropy over all configured classes |
+| `regression_weight` | Smooth L1 on standardized log-KPI (finite KPI targets only; flag class has none) |
+| `inactive_gate_weight` | BCE gate for class 0 vs active |
+| `ordinal_weight` | Ordinal CDF consistency on class logits |
+
+Also fixed: `class_weight_mode`, `gate_pos_weight_mode`, `gate_threshold`, `epsilon`, `selection_output` (`auto` / `class` / `gated` / `log_kpi`).
+
+### Optuna (`optuna.hparams`)
+
+Tunable capacity and optimizer settings only:
+
+`hidden_dim`, `node_id_dim`, `contingency_id_dim`, `type_dim`, `pair_dim`, `num_gnn_layers`, `decoder_hidden_dim`, `dropout`, `lr`, `weight_decay`.
+
+Voltage and Spower each get an independent study (`pair_aware_voltage`, `pair_aware_spower`).
 
 ## Event lookup and `fault_on` placement
 
@@ -54,43 +101,19 @@ Edge endpoint fields (`bus1`, `bus2` in edge metadata) are **not** used for even
 
 Ids are matched exactly when possible, then via canonical normalization and safe substring fallbacks.
 
-### Training selection score
+## Training selection score
 
-Per-epoch checkpoints and the winning Optuna trial use:
+Per-epoch checkpoints and the winning Optuna trial maximize:
 
-`score = high_recall + selection_f1_weight × high_f1 − selection_loss_weight × loss`
+```text
+score = 0.40·balanced_accuracy + 0.30·macro_f1 + 0.20·accuracy + 0.10·within_one_accuracy
+```
 
-Requires `training.selection_f1_weight` and `training.selection_loss_weight` in `config.yaml`.
+computed on validation predictions for the configured multi-class task. The score is **not** backpropagated; gradients come from the multi-term pair-aware loss only.
 
-The selection score is **not** backpropagated; gradients come from CORAL loss only. The composite score is evaluated on the validation set after each epoch and used solely to pick the best checkpoint within a trial and the best Optuna trial.
-
-#### What `high_recall` and `high_f1` mean
-
-Severity classes are ordinal integers `0 … num_classes - 1` (higher = more severe). For the selection score, each validation node is first converted to a binary label: **high** vs **not high**.
-
-The cutoff comes from `training.high_class_threshold`:
-
-| `high_class_threshold` | Which classes count as **high** | Example (`num_classes: 10`, classes 0–9) | Nordic smoke test (`num_classes: 5`, classes 0–4) |
-|------------------------|----------------------------------|----------------------------------------|-----------------------------------------------------|
-| `8` | All classes **≥ 8** | Classes **8 and 9** | — |
-| `3` | All classes **≥ 3** | — | Classes **3 and 4** (default from `Nordic_test_setup.py`) |
-| `null` | Top class only (`num_classes - 1`) | Class **9** only | Class **4** only (metrics only; no weighted sampling) |
-
-From validation predictions, each node gets two binary flags using the **same** cutoff:
-
-- **True high** — ground-truth class ≥ cutoff
-- **Predicted high** — predicted class ≥ cutoff
-
-Then:
-
-- **`high_recall`** = TP / (TP + FN) — of all nodes that are truly high, how many did the model also flag as high?
-- **`high_precision`** = TP / (TP + FP) — of all nodes the model flagged as high, how many are truly high?
-- **`high_f1`** = harmonic mean of `high_recall` and `high_precision`
-
-#### Motivation
-
-We weight high-class recall heavily because **missing an important component** (under-predicting severe instability) is typically more costly than **including extra components** (over-predicting severity). The composite score favors catching high-severity events while still penalizing excessive false alarms via `high_f1` and raw CORAL `loss`.
+`selection_output` chooses which decoding path is scored when set to `auto` (best among `class` / `gated` / `log_kpi` on validation) or a fixed mode.
 
 ## Related modules
 
-- [`gat_training_exports`](../modules/gat_training_exports.md), [`gat_voltage_training`](../modules/gat_voltage_training.md), [`gat_spower_training`](../modules/gat_spower_training.md), [`graph_construction`](../modules/graph_construction.md), [`electric_distance`](../modules/electric_distance.md)
+- [`pair_aware_gine`](../modules/pair_aware_gine.md), [`pair_aware_training`](../modules/pair_aware_training.md), [`voltage_training`](../modules/voltage_training.md), [`spower_training`](../modules/spower_training.md)
+- [`graph_construction`](../modules/graph_construction.md), [`electric_distance`](../modules/electric_distance.md)

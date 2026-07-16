@@ -1,6 +1,6 @@
 # `DYNAGNN.py`
 
-**Inference** on a single operating point: optional Dynawo initialization, graph build, per-scenario fault injection, and GAT voltage / spower predictions.
+**Inference** on a single operating point: optional Dynawo initialization, graph build, per-scenario fault injection, and pair-aware GINE voltage / spower predictions.
 
 Not part of `main.py`; run standalone after training.
 
@@ -17,7 +17,7 @@ python3 DYNAGNN.py --case-dir /path/to/operating_point --events-csv /path/to/eve
 | `--case-dir` | One OP folder (IIDM, `.dyd`, `.jobs`, …) |
 | `--events-csv` | One row per scenario (see below) |
 | `config.yaml` | `data.path`, `model.num_classes`, `network.country_filter`, `inference.initialization_duration`, `dynawo.path` |
-| `<data.path>/model/` | `gat_voltage_best_model.pt`, `gat_spower_best_model.pt`, scalers, hparams JSON |
+| `<data.path>/model/` | `voltage_best_model.pt`, `spower_best_model.pt`, scalers, hparams JSON |
 
 ## `events.csv`
 
@@ -34,8 +34,8 @@ Example:
 
 | scenario_id | Event |
 |-------------|-------|
-| `1` | `L1011-1013a` |
-| `2` | `1011_131` |
+| `1` | `<fault_component_id_1>` |
+| `2` | `<fault_component_id_2>` |
 
 ## Outputs
 
@@ -44,16 +44,18 @@ Under `<case-dir>/dynagnn_output/`:
 | Path | Content |
 |------|---------|
 | `electrical_distance.csv` | Pairwise electrical distances for this case |
-| `scenario_<id>/prediction_voltage.csv` | Bus-level predicted severity class |
-| `scenario_<id>/prediction_spower.csv` | Generator-level predicted severity class |
+| `scenario_<id>/prediction_voltage.csv` | Bus-level predicted severity class (one class per component) |
+| `scenario_<id>/prediction_spower.csv` | Generator-level predicted severity class (one class per component) |
 
 ## Flow (summary)
 
 1. Optional **initialization** when `inference.initialization_duration` > 0 (updates IIDM in place).
 2. Compute **electrical distance** CSV from the case IIDM.
 3. **Build graph** (`graph_construction.build_graph`, compact).
-4. Load **scalers** and **GAT models** from `<data.path>/model/`.
-5. For each `events.csv` row: clone the base graph, resolve the event, set `fault_on`, append `dz_fault`, scale features, run voltage and spower forward passes.
+4. Load **scalers** and **pair-aware GINE** checkpoints from `<data.path>/model/`.
+5. For each `events.csv` row: clone the base graph, resolve the event, set `fault_on`, append `dz_fault`, scale features, attach node/contingency tokens and event masks from the checkpoint vocabularies, run voltage and spower forward passes, decode to one class per target component.
+
+Decoding follows the checkpoint’s `selected_output` (`class`, `gated`, or `log_kpi`). The flag class is learned by the model — there is no deterministic post-hoc override from disconnection flags at inference time.
 
 ## Event lookup and `fault_on` placement
 
@@ -76,4 +78,5 @@ Training uses the same lookup and fault rules — see [`training.md`](training.m
 
 ## Related modules
 
-- [`graph_construction`](../modules/graph_construction.md), [`electric_distance`](../modules/electric_distance.md), [`initialization`](../modules/initialization.md), [`dynawo_runner`](../modules/dynawo_runner.md), [`gat_voltage_training`](../modules/gat_voltage_training.md), [`gat_spower_training`](../modules/gat_spower_training.md)
+- [`pair_aware_inference`](../modules/pair_aware_inference.md), [`pair_aware_gine`](../modules/pair_aware_gine.md)
+- [`graph_construction`](../modules/graph_construction.md), [`electric_distance`](../modules/electric_distance.md), [`initialization`](../modules/initialization.md), [`dynawo_runner`](../modules/dynawo_runner.md)

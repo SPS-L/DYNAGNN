@@ -24,25 +24,8 @@ from modules.pipeline_logging import configure_pipeline_logging, get_logger, get
 from src import build_op_assets, curves_post_process, dataset_construction, simulate, training
 
 MODEL_DIR = DATA_DIR / "model"
-
-with CONFIG_PATH.open("r", encoding="utf-8") as handle:
-    _CONFIG = yaml.safe_load(handle) or {}
-
-MODEL_ARCHITECTURE = str(
-    (_CONFIG.get("model") or {}).get("architecture", "gat_coral")
-).strip().lower()
-
-if MODEL_ARCHITECTURE == "pair_aware_gine":
-    VOLTAGE_MODEL = MODEL_DIR / "pair_aware_voltage_best_model.pt"
-    SPOWER_MODEL = MODEL_DIR / "pair_aware_spower_best_model.pt"
-elif MODEL_ARCHITECTURE == "gat_coral":
-    VOLTAGE_MODEL = MODEL_DIR / "gat_voltage_best_model.pt"
-    SPOWER_MODEL = MODEL_DIR / "gat_spower_best_model.pt"
-else:
-    raise SystemExit(
-        "Unsupported model.architecture: "
-        f"{MODEL_ARCHITECTURE!r}. Expected 'gat_coral' or 'pair_aware_gine'."
-    )
+VOLTAGE_MODEL = MODEL_DIR / "voltage_best_model.pt"
+SPOWER_MODEL = MODEL_DIR / "spower_best_model.pt"
 
 PIPELINE_STEPS: tuple[tuple[str, Callable[[], None]], ...] = (
     ("simulate", simulate.main),

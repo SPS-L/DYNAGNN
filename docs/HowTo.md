@@ -67,7 +67,7 @@ Example (for **bus**, use **Type** `bus` in both cases; **Fault name** is a `bus
 
 | Section | Key | Options | Purpose |
 |---------|-----|---------|---------|
-| **dynagnn** | `version` | string | Log header version |
+| **dynagnn** | `version` | string | Log header version (current: `1.2`) |
 | **dynawo** | `path` | path | Dynawo env script or install path |
 | **data** | `path` | path | Data root (`inputs/` and all pipeline outputs) |
 | **simulation** | `event_time` | float (s) | Fault time |
@@ -77,8 +77,8 @@ Example (for **bus**, use **Type** `bus` in both cases; **Fault name** is a `bus
 | | `step_sec` | float (s) | KPI window step |
 | | `class_bins.voltage.cuts` | list of positive floats (ascending) | Raw KPI cut thresholds for voltage class labels |
 | | `class_bins.spower.cuts` | list of positive floats (ascending) | Raw KPI cut thresholds for spower class labels |
-| **model** | `num_classes` | integer ≥ 2 | Severity levels |
-| **training** | `epochs` | integer | Max epochs per trial |
+| **model** | `num_classes` | integer ≥ 2 | Must equal `len(cuts) + 2` (KPI bins + flag class) |
+| **training** | `epochs` | integer | Max epochs per Optuna trial |
 | | `patience` | integer | Early stopping |
 | | `batch_size` | integer | Batch size |
 | | `split_mode` | `scenario`, `operating_point` | How train/val/test split is built |
@@ -86,12 +86,53 @@ Example (for **bus**, use **Type** `bus` in both cases; **Fault name** is a `bus
 | | `training` | float | Train fraction or OP count |
 | | `validation` | float | Validation fraction or OP count |
 | | `testing` | float | Test fraction or OP count |
-| | `high_class_threshold` | integer or `null` | Minimum class for **high** severity (sampling, under-penalty, composite score); `null` = top class only for metrics, no weighted sampling |
-| | `selection_f1_weight` | float (**required**) | Weight on `high_f1` in checkpoint / Optuna composite score |
-| | `selection_loss_weight` | float (**required**) | Weight on `loss` (subtracted) in composite score |
-| **optuna** | `n_trials` | integer | Hyperparameter trials |
-| | `hparams.*` | see `config.yaml` | Optuna search spaces (`categorical`, `int`, `float`) |
+| | `pair_aware.*` | see below | Fixed loss / decoding settings (not Optuna-tuned) |
+| **optuna** | `n_trials` | integer | Hyperparameter trials per task (Voltage and Spower are independent) |
+| | `hparams.*` | see `config.yaml` | Search spaces for model capacity + optimizer |
 | **inference** | `initialization_duration` | float (s), or `0` / omit | Steady-state run for `DYNAGNN.py` |
+
+### `training.pair_aware` (fixed)
+
+These keys are **not** Optuna-tuned. They fix how the training objective is built and how predictions are decoded / selected.
+
+Each forward pass produces three heads: class logits, an inactive (class-0) gate logit, and a standardized log-KPI prediction. The scalar loss minimized by SGD is
+
+$$
+\mathcal{L}
+=
+w_{\mathrm{cls}}\,\mathcal{L}_{\mathrm{CE}}
++
+w_{\mathrm{reg}}\,\mathcal{L}_{\mathrm{Huber}}
++
+w_{\mathrm{gate}}\,\mathcal{L}_{\mathrm{BCE}}
++
+w_{\mathrm{ord}}\,\mathcal{L}_{\mathrm{CDF}}
+$$
+
+where the config keys map as:
+
+| Config key | Symbol | Term |
+|------------|--------|------|
+| `classification_weight` | $w_{\mathrm{cls}}$ | Multi-class cross-entropy $\mathcal{L}_{\mathrm{CE}}$ on all labels $0,\ldots,C-1$ ($C =$ `model.num_classes`) |
+| `regression_weight` | $w_{\mathrm{reg}}$ | Smooth L1 (Huber) $\mathcal{L}_{\mathrm{Huber}}$ on standardized $\log_{10}(\mathrm{KPI}+\varepsilon)$; finite KPI targets only (flag class has none) |
+| `inactive_gate_weight` | $w_{\mathrm{gate}}$ | Binary cross-entropy $\mathcal{L}_{\mathrm{BCE}}$ of the gate vs “true class is 0” |
+| `ordinal_weight` | $w_{\mathrm{ord}}$ | Ordinal CDF consistency $\mathcal{L}_{\mathrm{CDF}}$ on the class logits |
+
+The other `pair_aware` keys do **not** enter $\mathcal{L}$ as scalar multipliers:
+
+| Key | Where it goes |
+|-----|----------------|
+| `class_weight_mode` | Builds per-class weights inside $\mathcal{L}_{\mathrm{CE}}$ (e.g. `sqrt_inverse`) |
+| `gate_pos_weight_mode` | Builds the positive-class weight inside $\mathcal{L}_{\mathrm{BCE}}$ (e.g. `balanced`) |
+| `epsilon` | $\varepsilon$ in $\log_{10}(\mathrm{KPI}+\varepsilon)$ when forming regression targets (and when inverting log-KPI decode) |
+| `gate_threshold` | Decode only: treat as class 0 when $\sigma(\mathrm{gate})\ge$ threshold (`gated` path) |
+| `selection_output` | Which decode path is scored for checkpoint / Optuna selection: `auto`, `class`, `gated`, or `log_kpi` |
+
+**Example (Nordic smoke test):** $w_{\mathrm{cls}}=1.0$, $w_{\mathrm{reg}}=0.30$, $w_{\mathrm{gate}}=0.20$, $w_{\mathrm{ord}}=0.10$, `epsilon: 1.0e-10`, `selection_output: auto`.
+
+### `optuna.hparams` (tuned)
+
+`hidden_dim`, `node_id_dim`, `contingency_id_dim`, `type_dim`, `pair_dim`, `num_gnn_layers`, `decoder_hidden_dim`, `dropout`, `lr`, `weight_decay`.
 
 ---
 
@@ -134,15 +175,15 @@ python3 main.py --from-step dataset
 
 A practical lower bound for that floor is the **maximum variance of numerical noise**, which scales as **k²**, where **k** is the **solver precision** declared in your `*.jobs` files (see [Solver precision](#data-folder-and-configyaml) above). Use the **first cut** τ₁ so that class 0 is KPI ≤ τ₁ and class 1 starts above τ₁:
 
-| Class | Meaning (example with four cuts) |
-|-------|----------------------------------|
+| Class | Meaning |
+|-------|---------|
 | 0 | KPI ≤ τ₁ — inactive / noise-dominated |
 | 1 | τ₁ < KPI ≤ τ₂ |
 | 2+ | progressively stronger dynamics |
 
 Set τ₁ to **at least k²** so class 0 is not filled with numerical artifacts. You may raise τ₁ slightly after training-set analysis if a strict k² threshold leaves class 0 too sparse or too large.
 
-**Nordic example:** solver precision is **k = 10⁻⁴**, so **k² = 10⁻⁸**. On the Nordic **training** set, we used **τ₁ = 10⁻⁷** for both voltage and spower (`cuts: [1e-7, 7.5e-7, 7.5e-6, 1.5e-5]`) — slightly above k² to obtain a more balanced class distribution while still treating the lowest band as noise-dominated.
+**Example (Nordic):** solver precision is **k = 10⁻⁴**, so **k² = 10⁻⁸**. On the Nordic **training** set, τ₁ = 10⁻⁶ for both voltage and spower (`cuts: [1e-6, 2.25e-5, 3e-4, 5.625e-4]`) — above k² so class 0 remains noise-dominated while higher cuts follow the training KPI distribution.
 
 Higher cuts (τ₂, τ₃, …) have no universal default: choose them from **training-set** percentiles or domain reasoning so each class reflects meaningfully stronger dynamics than the previous one.
 
@@ -156,7 +197,7 @@ Higher cuts (τ₂, τ₃, …) have no universal default: choose them from **tr
 2. **`build_op_assets`** — graphs, electrical distance, generator SNom (`src/build_op_assets.py`)
 3. **`curve_process`** — per-OP KPI/flag tables, combined KPI CSVs, and train/val/test split (`src/curves_post_process.py`)
 4. **`dataset`** — class labels from configured KPI cuts (`src/dataset_construction.py`)
-5. **`training`** — GAT training and model export (`src/training.py`)
+5. **`training`** — pair-aware GINE Optuna training and model export (`src/training.py`)
 
 Omit both flags for a **full run**. Use **`--from-step`** to resume from a later stage; use **`--to-step`** to stop after a stage (inclusive).
 
@@ -197,7 +238,7 @@ python3 main.py --from-step dataset --to-step training
 |-------------|-------------|-------------------------------------------|
 | `curve_process` | Combined KPI tables + split | `KPI/KPI_voltage.csv`, `KPI/KPI_spower.csv`, `Dataset/train_val_test_split.csv` |
 | `dataset` | Class-label datasets | `Dataset/Dataset_Voltage.csv`, `Dataset/Dataset_Spower.csv`, `Dataset/KPI_class_bins.csv` |
-| `training` | Trained models | `model/gat_voltage_best_model.pt`, `model/gat_spower_best_model.pt` |
+| `training` | Trained models | `model/voltage_best_model.pt`, `model/spower_best_model.pt` |
 
 See the per-stage input tables in [`src/simulate.md`](src/simulate.md), [`src/build_op_assets.md`](src/build_op_assets.md), [`src/curves_post_process.md`](src/curves_post_process.md), [`src/dataset_construction.md`](src/dataset_construction.md), and [`src/training.md`](src/training.md).
 
@@ -220,7 +261,6 @@ Each `main.py` run still recreates `<data.path>/dynagnn.log` from scratch.
 | **7** | 6169.1 |
 | **8** | 5658.8 |
 | **9** | 5207.7 |
-| **10** | 4609.8 |
 
 ### Nordic smoke-test `config.yaml` (written by `Nordic_test_setup.py`)
 
@@ -240,7 +280,7 @@ The following is **exactly what the script writes** to `config.yaml` (shown here
 # Before running main.py, set dynawo.path and data.path to absolute paths on your machine.
 
 dynagnn:
-  version: 1.11
+  version: 1.2
 
 dynawo:
   path: "/absolute/path/to/myEnvDynawo.sh"
@@ -260,9 +300,9 @@ kpi:
   step_sec: 1.0
   class_bins:
     voltage:
-      cuts: [1e-7, 7.5e-7, 7.5e-6, 1.5e-5]  # 5 KPI classes (0-4) + 1 flag class => model.num_classes: 6
+      cuts: [1e-6, 2.25e-5, 3e-4, 5.625e-4]  # 5 KPI classes (0-4) + 1 flag class => model.num_classes: 6
     spower:
-      cuts: [1e-7, 7.5e-7, 7.5e-6, 1.5e-5]
+      cuts: [1e-6, 2.25e-5, 3e-4, 5.625e-4]
 
 model:
   num_classes: 6
@@ -276,9 +316,18 @@ training:
   training: 0.8
   validation: 0.1
   testing: 0.1
-  high_class_threshold: 4  # classes >= 4 (4 and 5) are "high" with num_classes: 6
-  selection_f1_weight: 0.5
-  selection_loss_weight: 0.1
+
+  # Fixed loss construction and output-decoding settings.
+  pair_aware:
+    classification_weight: 1.0
+    regression_weight: 0.30
+    inactive_gate_weight: 0.20
+    ordinal_weight: 0.10
+    class_weight_mode: sqrt_inverse
+    gate_pos_weight_mode: balanced
+    gate_threshold: 0.50
+    epsilon: 1.0e-10
+    selection_output: auto
 
 optuna:
   n_trials: 5
@@ -286,58 +335,58 @@ optuna:
     hidden_dim:
       type: categorical
       choices: [64, 128, 256]
-    num_layers:
-      type: int
-      low: 2
-      high: 4
-    hidden_channels:
+    node_id_dim:
+      type: categorical
+      choices: [16, 24, 32]
+    contingency_id_dim:
       type: categorical
       choices: [16, 32, 64]
-    num_heads:
+    type_dim:
       type: categorical
-      choices: [1, 2, 4, 8]
-    dropout:
-      type: float
-      low: 0.1
-      high: 0.5
+      choices: [4, 8, 16]
+    pair_dim:
+      type: categorical
+      choices: [16, 32, 64]
     num_gnn_layers:
       type: int
       low: 2
       high: 4
+    decoder_hidden_dim:
+      type: categorical
+      choices: [128, 256, 512]
+    dropout:
+      type: float
+      low: 0.05
+      high: 0.35
     lr:
       type: float
-      low: 1.0e-4
-      high: 5.0e-3
+      low: 0.00001
+      high: 0.001
       log: true
     weight_decay:
       type: float
-      low: 1.0e-6
-      high: 1.0e-3
+      low: 0.0000001
+      high: 0.001
       log: true
-    under_penalty_lambda:
-      type: float
-      low: 0.0
-      high: 2.0
-    coral_prediction_threshold:
-      type: float
-      low: 0.3
-      high: 0.7
 
 inference:
   initialization_duration: 10.0  # steady-state run before graph build; use 0 to skip
 ```
 
-With `model.num_classes: 6` (classes 0–5), `high_class_threshold: 4` treats classes **4 and 5** as high severity. Class **5** is the action/disconnection flag class. That enables weighted train sampling and the CORAL under-penalty (when Optuna picks `under_penalty_lambda > 0`), and sets the cutoff for `high_recall` / `high_f1` in the validation composite score. See [`src/training.md`](src/training.md) for details.
+With `model.num_classes = len(cuts) + 2`, the highest class index is the action/disconnection **flag** class. Voltage and Spower are tuned independently with Optuna; validation checkpoints maximize a balanced multi-class selection score (see [`src/training.md`](src/training.md)). Deployment checkpoints are written as `voltage_best_model.pt` and `spower_best_model.pt`.
 
-### KPI class bins (v1.11)
+**Example (Nordic smoke test):** four cuts → classes 0–4 by KPI magnitude, flag class 5, `num_classes: 6`.
 
-See [KPI cut thresholds — recommendations](#kpi-cut-thresholds--recommendations) for how to choose cuts (training set only, noise floor at k², Nordic example).
+### KPI class bins (v1.11 labeling, used by v1.2)
 
-`kpi.class_bins.<type>.cuts` lists **strictly increasing raw KPI thresholds** (e.g. `[1e-7, 7.5e-7, 7.5e-6, 1.5e-5]`). During dataset construction, DYNAGNN:
+See [KPI cut thresholds — recommendations](#kpi-cut-thresholds--recommendations) for how to choose cuts (training set only, noise floor at k²).
+
+`kpi.class_bins.<type>.cuts` lists **strictly increasing raw KPI thresholds**. During dataset construction, DYNAGNN:
 
 1. Uses raw KPI values from the combined KPI tables (no log transform or scaling).
-2. Assigns class labels from the fixed cuts (classes 0–4 by KPI magnitude).
-3. Overrides action / disconnection cells to class 5 (voltage and spower: actions + DISC).
+2. Assigns class labels from the fixed cuts (KPI severity classes $0,\ldots,K$).
+3. Overrides action / disconnection cells to the flag class $K+1$ (voltage and spower: actions + DISC).
 
 Set `model.num_classes` to **`len(cuts) + 2`**. Applied cuts are recorded in `<data.path>/Dataset/KPI_class_bins.csv`.
 
+**Example (Nordic):** `cuts: [1e-6, 2.25e-5, 3e-4, 5.625e-4]` → `num_classes: 6`.

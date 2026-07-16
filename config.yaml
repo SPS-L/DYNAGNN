@@ -1,7 +1,7 @@
 # Configuration for DYNAGNN scripts.
 
 dynagnn:
-  version: 1.11
+  version: 1.2
 
 dynawo:
   path: "path to myEnvDynawo.sh"
@@ -21,94 +21,74 @@ kpi:
   step_sec: 
   class_bins:
     voltage:
-      cuts:  # raw KPI thresholds (ascending), e.g. [1e-7, 7.5e-7, 7.5e-6, 1.5e-5]
+      cuts:  # raw KPI thresholds (ascending), e.g. [1e-6, 2.25e-5, 3e-4, 5.625e-4]
     spower:
       cuts:  # raw KPI thresholds (ascending)
 
 model:
-  # Use gat_coral for the legacy implementation.
-  architecture: pair_aware_gine
   num_classes: 
-  pair_aware:
-    hidden_dim: 128
-    node_id_dim: 24
-    contingency_id_dim: 32
-    type_dim: 8
-    pair_dim: 32
-    op_context_embedding_dim: 32
-    num_gnn_layers: 3
-    decoder_hidden_dim: 256
-    dropout: 0.15
 
 training:
-  epochs: 
-  patience: 
-  batch_size: 
-  split_mode: 
-  seed: 
-  training: 
-  validation: 
-  testing: 
-  high_class_threshold: 
-  selection_f1_weight:     # composite score: high_recall + w*f1 - w*loss
-  selection_loss_weight: 
+  epochs:
+  patience:
+  batch_size:
+  split_mode:
+  seed:
+  training:
+  validation:
+  testing:
 
+  # Fixed loss construction and output-decoding settings.
   pair_aware:
-    op_context_mode: none
-    lr: 0.0002
-    weight_decay: 0.00001
-    classification_weight: 1.0
-    regression_weight: 0.30
-    inactive_gate_weight: 0.20
-    ordinal_weight: 0.10
-    class_weight_mode: sqrt_inverse
-    gate_pos_weight_mode: balanced
-    gate_threshold: 0.50
-    epsilon: 1.0e-10
-    selection_output: auto
+    classification_weight: 
+    regression_weight:  
+    inactive_gate_weight: 
+    ordinal_weight: 
+    class_weight_mode: 
+    gate_pos_weight_mode: 
+    gate_threshold:
+    epsilon: 
+    selection_output: 
 
 optuna:
-  n_trials: 
+  n_trials:
   hparams:
     hidden_dim:
       type: categorical
       choices: 
-    num_layers:
+    node_id_dim:
+      type: categorical
+      choices: 
+    contingency_id_dim:
+      type: categorical
+      choices: 
+    type_dim:
+      type: categorical
+      choices: 
+    pair_dim:
+      type: categorical
+      choices: 
+    num_gnn_layers:
       type: int
       low: 
       high: 
-    hidden_channels:
-      type: categorical
-      choices: 
-    num_heads:
+    decoder_hidden_dim:
       type: categorical
       choices: 
     dropout:
       type: float
       low: 
       high: 
-    num_gnn_layers:
-      type: int
-      low: 
-      high: 
     lr:
       type: float
       low: 
-      high: 
+      high:
       log: true
     weight_decay:
       type: float
       low: 
       high: 
       log: true
-    under_penalty_lambda:
-      type: float
-      low: 
-      high: 
-    coral_prediction_threshold:
-      type: float
-      low: 
-      high: 
 
 inference:
   initialization_duration:  # total Dynawo run time (s) before constructing the graph, to find a steady state solution for the initial operating point

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Pair-aware direct six-class Voltage GNN for DYNAGNN.
+"""Pair-aware direct six-class GINE model for DYNAGNN.
 
 The GNN is the primary predictor. It receives graph topology and physical
 features, explicit target-component identity, contingency identity/location,
@@ -37,17 +37,16 @@ DISCONNECTED_CLASS = 5
 
 @dataclass(frozen=True)
 class PairAwareHParams:
-    hidden_dim: int = 128
-    node_id_dim: int = 24
-    contingency_id_dim: int = 32
-    type_dim: int = 8
-    pair_dim: int = 32
-    op_context_embedding_dim: int = 32
-    num_gnn_layers: int = 3
-    decoder_hidden_dim: int = 256
-    dropout: float = 0.15
-    lr: float = 2.0e-4
-    weight_decay: float = 1.0e-5
+    hidden_dim: int
+    node_id_dim: int
+    contingency_id_dim: int
+    type_dim: int
+    pair_dim: int
+    num_gnn_layers: int
+    decoder_hidden_dim: int
+    dropout: float
+    lr: float
+    weight_decay: float
 
 
 @dataclass(frozen=True)
@@ -92,7 +91,7 @@ class ResidualGINEBlock(nn.Module):
         return F.relu(self.norm(x + self.dropout(update)))
 
 
-class PairAwareDirectVoltageModel(nn.Module):
+class PairAwareGINE(nn.Module):
     """Direct event- and target-conditioned GINE model.
 
     This is intentionally close to the strongest pair-aware residual encoder,
@@ -105,8 +104,7 @@ class PairAwareDirectVoltageModel(nn.Module):
         *,
         num_node_tokens: int,
         num_contingency_tokens: int,
-        op_context_dim: int,
-        use_op_context: bool,
+        target_mask_attr: str,
         hparams: PairAwareHParams,
         num_node_types: int = 3,
         num_edge_types: int = 3,
@@ -114,7 +112,7 @@ class PairAwareDirectVoltageModel(nn.Module):
         super().__init__()
         h = int(hparams.hidden_dim)
         self.hparams = hparams
-        self.use_op_context = bool(use_op_context)
+        self.target_mask_attr = str(target_mask_attr)
 
         self.node_type_embedding = nn.Embedding(num_node_types, hparams.type_dim)
         self.edge_type_embedding = nn.Embedding(num_edge_types, hparams.type_dim)
@@ -156,29 +154,14 @@ class PairAwareDirectVoltageModel(nn.Module):
         self.target_pair_projection = nn.Linear(hparams.node_id_dim, hparams.pair_dim)
         self.contingency_pair_projection = nn.Linear(hparams.contingency_id_dim, hparams.pair_dim)
 
-        if self.use_op_context:
-            if int(op_context_dim) <= 0:
-                raise ValueError("op_context_dim must be positive when use_op_context=True")
-            self.op_context_encoder = nn.Sequential(
-                nn.Linear(int(op_context_dim), hparams.op_context_embedding_dim),
-                nn.ReLU(),
-                nn.LayerNorm(hparams.op_context_embedding_dim),
-                nn.Dropout(hparams.dropout),
-            )
-            op_dim = hparams.op_context_embedding_dim
-        else:
-            self.op_context_encoder = None
-            op_dim = 0
-
         # target h + event h + global(mean|max)=2h + |h-e| + h*e + dz
-        # + explicit target ID + explicit contingency ID + pair interaction + optional OP context
+        # + explicit target ID + explicit contingency ID + pair interaction
         decoder_in = (
             h * 6
             + 1
             + hparams.node_id_dim
             + hparams.contingency_id_dim
             + hparams.pair_dim
-            + op_dim
         )
         self.shared_decoder = nn.Sequential(
             nn.Linear(decoder_in, hparams.decoder_hidden_dim),
@@ -257,7 +240,7 @@ class PairAwareDirectVoltageModel(nn.Module):
             )
         )
 
-        target_mask = data.bus_node_mask.bool()
+        target_mask = getattr(data, self.target_mask_attr).bool()
         target_batch = batch[target_mask]
         target_h = h[target_mask]
         target_event = event_context[target_batch]
@@ -283,13 +266,6 @@ class PairAwareDirectVoltageModel(nn.Module):
             target_contingency,
             pair_interaction,
         ]
-        if self.use_op_context:
-            op_context = data.op_context
-            if op_context.ndim == 1:
-                op_context = op_context.view(num_graphs, -1)
-            op_embedding = self.op_context_encoder(op_context.float())
-            parts.append(op_embedding[target_batch])
-
         shared = self.shared_decoder(torch.cat(parts, dim=1))
         return {
             "class_logits": self.class_head(shared),
@@ -429,13 +405,13 @@ def _move_batch(data, device: torch.device):
         "edge_attr",
         "y_class",
         "bus_node_mask",
+        "gen_node_mask",
         "node_token",
         "contingency_token",
         "event_node_mask",
         "event_edge_mask",
         "event_graph_type",
         "y_log_kpi_std",
-        "op_context",
         "structural_class5_mask",
     ]
     keys = [key for key in tensor_keys if hasattr(data, key)]
@@ -478,6 +454,7 @@ def _run_epoch(
     cuts: np.ndarray,
     epsilon: float,
     gate_threshold: float,
+    target_mask_attr: str,
     collect_predictions: bool = False,
 ) -> dict:
     train_mode = optimizer is not None
@@ -500,9 +477,10 @@ def _run_epoch(
         for data in loader:
             data = _move_batch(data, device)
             output = model(data)
-            y_all = data.y_class[data.bus_node_mask].long()
-            log_target_all = data.y_log_kpi_std[data.bus_node_mask]
-            structural_all = data.structural_class5_mask[data.bus_node_mask].bool()
+            target_mask = getattr(data, target_mask_attr).bool()
+            y_all = data.y_class[target_mask].long()
+            log_target_all = data.y_log_kpi_std[target_mask]
+            structural_all = data.structural_class5_mask[target_mask].bool()
 
             valid_mask = (y_all >= 0) & (y_all < NUM_CLASSES)
             if not bool(valid_mask.any()):
@@ -585,8 +563,8 @@ def _run_epoch(
                 num_graphs = int(data.num_graphs)
                 ops = _string_list(getattr(data, "op_name", ""), num_graphs)
                 events = _string_list(getattr(data, "event_id", ""), num_graphs)
-                target_graph_all = data.batch[data.bus_node_mask].detach().cpu().numpy()
-                target_token_all = data.node_token[data.bus_node_mask].detach().cpu().numpy()
+                target_graph_all = data.batch[target_mask].detach().cpu().numpy()
+                target_token_all = data.node_token[target_mask].detach().cpu().numpy()
                 structural_np_all = structural_all.detach().cpu().numpy()
                 valid_indices = np.flatnonzero(valid_mask.detach().cpu().numpy())
                 probabilities = torch.softmax(detached_logits, dim=1).cpu().numpy()
@@ -638,12 +616,12 @@ def _run_epoch(
         result["predictions"] = prediction_rows
     return result
 
-def _compute_class_weights(loader, mode: str, device: torch.device) -> Optional[torch.Tensor]:
+def compute_class_weights(loader, mode: str, device: torch.device, target_mask_attr: str) -> Optional[torch.Tensor]:
     if mode == "none":
         return None
     counts = torch.zeros(NUM_CLASSES, dtype=torch.float64)
     for data in loader:
-        y = data.y_class[data.bus_node_mask]
+        y = data.y_class[getattr(data, target_mask_attr)]
         y = y[(y >= 0) & (y < NUM_CLASSES)]
         counts += torch.bincount(y, minlength=NUM_CLASSES).double()
     weights = torch.sqrt(counts.sum() / counts.clamp_min(1.0))
@@ -651,13 +629,13 @@ def _compute_class_weights(loader, mode: str, device: torch.device) -> Optional[
     return weights.float().to(device)
 
 
-def _compute_gate_pos_weight(loader, mode: str, device: torch.device) -> Optional[torch.Tensor]:
+def compute_gate_pos_weight(loader, mode: str, device: torch.device, target_mask_attr: str) -> Optional[torch.Tensor]:
     if mode == "none":
         return None
     inactive = 0
     active = 0
     for data in loader:
-        y = data.y_class[data.bus_node_mask]
+        y = data.y_class[getattr(data, target_mask_attr)]
         y = y[(y >= 0) & (y < NUM_CLASSES)]
         inactive += int((y == 0).sum().item())
         active += int((y != 0).sum().item())
@@ -850,14 +828,14 @@ def _log_test_breakdown(
 
 def run_pair_aware_training(
     *,
+    task: str,
+    target_mask_attr: str,
     train_loader,
     validation_loader,
     test_loader,
     output_dir: Path,
     num_node_tokens: int,
     num_contingency_tokens: int,
-    op_context_dim: int,
-    use_op_context: bool,
     hparams: PairAwareHParams,
     loss_weights: PairAwareLossWeights,
     log_mean: float,
@@ -872,26 +850,25 @@ def run_pair_aware_training(
     class_weight_mode: str,
     gate_pos_weight_mode: str,
     logger: logging.Logger,
+    trial=None,
 ) -> dict:
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     )
-    model = PairAwareDirectVoltageModel(
+    model = PairAwareGINE(
         num_node_tokens=num_node_tokens,
         num_contingency_tokens=num_contingency_tokens,
-        op_context_dim=op_context_dim,
-        use_op_context=use_op_context,
+        target_mask_attr=target_mask_attr,
         hparams=hparams,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=hparams.lr, weight_decay=hparams.weight_decay)
     scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=4, min_lr=1.0e-6)
-    class_weights = _compute_class_weights(train_loader, class_weight_mode, device)
-    inactive_pos_weight = _compute_gate_pos_weight(train_loader, gate_pos_weight_mode, device)
+    class_weights = compute_class_weights(train_loader, class_weight_mode, device, target_mask_attr)
+    inactive_pos_weight = compute_gate_pos_weight(train_loader, gate_pos_weight_mode, device, target_mask_attr)
 
     logger.info("Pair-aware direct GNN device: %s", device)
     logger.info("HParams: %s", asdict(hparams))
     logger.info("Loss weights: %s", asdict(loss_weights))
-    logger.info("Use OP context: %s (dim=%d)", use_op_context, op_context_dim)
     logger.info("Class weights: %s", None if class_weights is None else class_weights.detach().cpu().tolist())
     logger.info("Inactive pos weight: %s", None if inactive_pos_weight is None else inactive_pos_weight.detach().cpu().tolist())
 
@@ -917,6 +894,7 @@ def run_pair_aware_training(
             cuts=cuts,
             epsilon=epsilon,
             gate_threshold=gate_threshold,
+            target_mask_attr=target_mask_attr,
         )
         row = {"epoch": epoch, **{f"train_{k}_loss": v for k, v in train_result["loss"].items()}}
 
@@ -934,13 +912,16 @@ def run_pair_aware_training(
                 cuts=cuts,
                 epsilon=epsilon,
                 gate_threshold=gate_threshold,
+                target_mask_attr=target_mask_attr,
             )
             candidates = {
                 "class": val_result["six_class_class"]["selection_score"],
                 "gated": val_result["six_class_gated"]["selection_score"],
                 "log_kpi": val_result["six_class_log_kpi"]["selection_score"],
             }
-            selected = max(candidates, key=candidates.get)
+            selected = selection_output or max(candidates, key=candidates.get)
+            if selected not in candidates:
+                raise ValueError(f"Unsupported selection_output: {selected!r}")
             score = float(candidates[selected])
             for name, value in candidates.items():
                 row[f"val_{name}_score"] = float(value)
@@ -956,6 +937,12 @@ def run_pair_aware_training(
                 stale = 0
             elif fixed_epochs is None:
                 stale += 1
+
+            if trial is not None:
+                trial.report(score, step=epoch)
+                if trial.should_prune():
+                    import optuna
+                    raise optuna.TrialPruned()
 
             logger.info(
                 "Epoch %03d | train=%.4f | val class=%.4f gated=%.4f logKPI=%.4f | selected=%s %.4f",
@@ -991,7 +978,7 @@ def run_pair_aware_training(
         best_epoch = int(fixed_epochs)
         best_output = selection_output or "class"
 
-    training_dir = output_dir / "training" / "voltage_pair_aware_six_class_gnn"
+    training_dir = output_dir / "training" / task
     training_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(history).to_csv(training_dir / "history.csv", index=False)
     torch.save(model.state_dict(), training_dir / "model_state.pt")
@@ -1002,10 +989,10 @@ def run_pair_aware_training(
                 "loss_weights": asdict(loss_weights),
                 "best_epoch": best_epoch,
                 "selected_output": best_output,
-                "use_op_context": use_op_context,
-                "op_context_dim": op_context_dim,
                 "log_mean": log_mean,
                 "log_std": log_std,
+                "task": task,
+                "target_mask_attr": target_mask_attr,
                 "num_classes": NUM_CLASSES,
                 "class5_handling": "learned direct prediction; no deterministic override",
                 "cuts": cuts.tolist(),
@@ -1022,6 +1009,7 @@ def run_pair_aware_training(
         "trained_epochs": int(len(history)),
         "selected_output": best_output,
         "best_validation_score": None if best_score == -float("inf") else float(best_score),
+        "model_state_path": str(training_dir / "model_state.pt"),
     }
     if test_loader is not None:
         test_result = _run_epoch(
@@ -1037,6 +1025,7 @@ def run_pair_aware_training(
             cuts=cuts,
             epsilon=epsilon,
             gate_threshold=gate_threshold,
+            target_mask_attr=target_mask_attr,
             collect_predictions=True,
         )
         result["test"] = test_result
@@ -1044,6 +1033,78 @@ def run_pair_aware_training(
         result["selected_test_activity"] = test_result[f"activity_{best_output}"]
         # Backward-compatible name; this is the learned six-class result.
         result["selected_test_combined"] = result["selected_test_six_class"]
-        _save_test_outputs(output_dir, test_result, best_output)
+        _save_test_outputs(training_dir, test_result, best_output)
         _log_test_breakdown(logger, result["selected_test_six_class"], selected_output=best_output)
     return result
+
+
+def evaluate_saved_pair_aware_model(
+    *,
+    task: str,
+    target_mask_attr: str,
+    state_dict: dict,
+    train_loader,
+    test_loader,
+    output_dir: Path,
+    num_node_tokens: int,
+    num_contingency_tokens: int,
+    hparams: PairAwareHParams,
+    loss_weights: PairAwareLossWeights,
+    log_mean: float,
+    log_std: float,
+    cuts: np.ndarray,
+    epsilon: float,
+    gate_threshold: float,
+    selected_output: str,
+    class_weight_mode: str,
+    gate_pos_weight_mode: str,
+    logger: logging.Logger,
+) -> dict:
+    """Load a saved state, evaluate it on test data, and export test metrics."""
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    )
+    model = PairAwareGINE(
+        num_node_tokens=num_node_tokens,
+        num_contingency_tokens=num_contingency_tokens,
+        target_mask_attr=target_mask_attr,
+        hparams=hparams,
+    ).to(device)
+    model.load_state_dict(state_dict)
+    model.eval()
+
+    class_weights = compute_class_weights(
+        train_loader, class_weight_mode, device, target_mask_attr
+    )
+    inactive_pos_weight = compute_gate_pos_weight(
+        train_loader, gate_pos_weight_mode, device, target_mask_attr
+    )
+    test_result = _run_epoch(
+        model=model,
+        loader=test_loader,
+        device=device,
+        optimizer=None,
+        class_weights=class_weights,
+        inactive_pos_weight=inactive_pos_weight,
+        loss_weights=loss_weights,
+        log_mean=log_mean,
+        log_std=log_std,
+        cuts=cuts,
+        epsilon=epsilon,
+        gate_threshold=gate_threshold,
+        target_mask_attr=target_mask_attr,
+        collect_predictions=True,
+    )
+    task_dir = Path(output_dir) / task
+    task_dir.mkdir(parents=True, exist_ok=True)
+    _save_test_outputs(task_dir, test_result, selected_output)
+    selected_metrics = test_result[f"six_class_{selected_output}"]
+    _log_test_breakdown(logger, selected_metrics, selected_output=selected_output)
+    return {
+        "loss": test_result["loss"],
+        "six_class_class": test_result["six_class_class"],
+        "six_class_gated": test_result["six_class_gated"],
+        "six_class_log_kpi": test_result["six_class_log_kpi"],
+        "selected_test_six_class": selected_metrics,
+        "selected_test_activity": test_result[f"activity_{selected_output}"],
+    }

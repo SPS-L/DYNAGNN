@@ -12,22 +12,35 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 import pandas as pd
 import torch
+import optuna
 from torch_geometric.loader import DataLoader
 
-from modules.gat_spower_pair_aware_six_class import (
-    PairAwareHParams as SpowerHParams,
-    PairAwareLossWeights as SpowerLossWeights,
-    run_pair_aware_training as run_spower_pair_aware_training,
+from modules.pair_aware_gine import (
+    NUM_CLASSES,
+    PairAwareHParams,
+    PairAwareLossWeights,
+    evaluate_saved_pair_aware_model,
+    run_pair_aware_training,
 )
-from modules.gat_voltage_pair_aware_six_class import (
-    PairAwareHParams as VoltageHParams,
-    PairAwareLossWeights as VoltageLossWeights,
-    run_pair_aware_training as run_voltage_pair_aware_training,
-)
-from modules.op_context_aggregate import normalize_op
 
-PAIR_AWARE_ARCHITECTURE = "pair_aware_gine"
-NUM_CLASSES = 6
+
+def normalize_op(value: object) -> str:
+    import re
+
+    text = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    if text.startswith("operating_point_"):
+        suffix = text.rsplit("_", 1)[-1]
+        if suffix.isdigit():
+            return f"operating_point_{int(suffix)}"
+    match = re.fullmatch(r"op_?(\d+)", text)
+    if match:
+        return f"operating_point_{int(match.group(1))}"
+    if text.isdigit():
+        return f"operating_point_{int(text)}"
+    return text
+
+
+MODEL_TYPE = "pair_aware_gine"
 ACTIVITY_CLASSES = 5
 
 
@@ -356,44 +369,115 @@ def _float_list(value: Any, *, expected: int, label: str) -> list[float]:
     return result
 
 
-def _pair_configs(config: dict, task: str):
-    model_cfg = config.get("model", {}) or {}
-    training_cfg = config.get("training", {}) or {}
-    pair_model_cfg = model_cfg.get("pair_aware", {}) or {}
-    pair_training_cfg = training_cfg.get("pair_aware", {}) or {}
 
-    hparams_values = {
-        "hidden_dim": int(pair_model_cfg.get("hidden_dim", 128)),
-        "node_id_dim": int(pair_model_cfg.get("node_id_dim", 24)),
-        "contingency_id_dim": int(pair_model_cfg.get("contingency_id_dim", 32)),
-        "type_dim": int(pair_model_cfg.get("type_dim", 8)),
-        "pair_dim": int(pair_model_cfg.get("pair_dim", 32)),
-        "op_context_embedding_dim": int(pair_model_cfg.get("op_context_embedding_dim", 32)),
-        "num_gnn_layers": int(pair_model_cfg.get("num_gnn_layers", 3)),
-        "decoder_hidden_dim": int(pair_model_cfg.get("decoder_hidden_dim", 256)),
-        "dropout": float(pair_model_cfg.get("dropout", 0.15)),
-        "lr": float(pair_training_cfg.get("lr", 2.0e-4)),
-        "weight_decay": float(pair_training_cfg.get("weight_decay", 1.0e-5)),
-    }
-    loss_values = {
-        "classification": float(pair_training_cfg.get("classification_weight", 1.0)),
-        "regression": float(pair_training_cfg.get("regression_weight", 0.30)),
-        "inactive_gate": float(pair_training_cfg.get("inactive_gate_weight", 0.20)),
-        "ordinal_cdf": float(pair_training_cfg.get("ordinal_weight", 0.10)),
-    }
+def _loss_weights(config: dict) -> PairAwareLossWeights:
+    pair_cfg = ((config.get("training", {}) or {}).get("pair_aware", {}) or {})
+    return PairAwareLossWeights(
+        classification=float(pair_cfg.get("classification_weight", 1.0)),
+        regression=float(pair_cfg.get("regression_weight", 0.30)),
+        inactive_gate=float(pair_cfg.get("inactive_gate_weight", 0.20)),
+        ordinal_cdf=float(pair_cfg.get("ordinal_weight", 0.10)),
+    )
+
+
+def _suggest(trial: optuna.Trial, name: str, spec: dict):
+    if not isinstance(spec, dict):
+        raise TypeError(f"optuna.hparams.{name} must be a mapping")
+    kind = str(spec.get("type", "")).strip().lower()
+    if kind == "categorical":
+        choices = list(spec.get("choices") or [])
+        if not choices:
+            raise ValueError(f"optuna.hparams.{name}.choices cannot be empty")
+        return trial.suggest_categorical(name, choices)
+    if kind == "int":
+        if spec.get("low") is None or spec.get("high") is None:
+            raise ValueError(f"optuna.hparams.{name} requires low and high")
+        return trial.suggest_int(
+            name,
+            int(spec["low"]),
+            int(spec["high"]),
+            step=int(spec.get("step", 1)),
+            log=bool(spec.get("log", False)),
+        )
+    if kind == "float":
+        if spec.get("low") is None or spec.get("high") is None:
+            raise ValueError(f"optuna.hparams.{name} requires low and high")
+        kwargs = {"log": bool(spec.get("log", False))}
+        if spec.get("step") is not None:
+            kwargs["step"] = float(spec["step"])
+        return trial.suggest_float(name, float(spec["low"]), float(spec["high"]), **kwargs)
+    raise ValueError(
+        f"Unsupported optuna.hparams.{name}.type={kind!r}; "
+        "expected categorical, int, or float"
+    )
+
+
+def _sample_hparams(trial: optuna.Trial, space: dict) -> PairAwareHParams:
+    required = (
+        "hidden_dim",
+        "node_id_dim",
+        "contingency_id_dim",
+        "type_dim",
+        "pair_dim",
+        "num_gnn_layers",
+        "decoder_hidden_dim",
+        "dropout",
+        "lr",
+        "weight_decay",
+    )
+    missing = [name for name in required if name not in space]
+    if missing:
+        raise KeyError(f"Missing Optuna hyperparameter definitions: {missing}")
+    return PairAwareHParams(
+        hidden_dim=int(_suggest(trial, "hidden_dim", space["hidden_dim"])),
+        node_id_dim=int(_suggest(trial, "node_id_dim", space["node_id_dim"])),
+        contingency_id_dim=int(
+            _suggest(trial, "contingency_id_dim", space["contingency_id_dim"])
+        ),
+        type_dim=int(_suggest(trial, "type_dim", space["type_dim"])),
+        pair_dim=int(_suggest(trial, "pair_dim", space["pair_dim"])),
+        num_gnn_layers=int(
+            _suggest(trial, "num_gnn_layers", space["num_gnn_layers"])
+        ),
+        decoder_hidden_dim=int(
+            _suggest(trial, "decoder_hidden_dim", space["decoder_hidden_dim"])
+        ),
+        dropout=float(_suggest(trial, "dropout", space["dropout"])),
+        lr=float(_suggest(trial, "lr", space["lr"])),
+        weight_decay=float(_suggest(trial, "weight_decay", space["weight_decay"])),
+    )
+
+
+def _hparams_from_best_params(params: dict) -> PairAwareHParams:
+    return PairAwareHParams(
+        hidden_dim=int(params["hidden_dim"]),
+        node_id_dim=int(params["node_id_dim"]),
+        contingency_id_dim=int(params["contingency_id_dim"]),
+        type_dim=int(params["type_dim"]),
+        pair_dim=int(params["pair_dim"]),
+        num_gnn_layers=int(params["num_gnn_layers"]),
+        decoder_hidden_dim=int(params["decoder_hidden_dim"]),
+        dropout=float(params["dropout"]),
+        lr=float(params["lr"]),
+        weight_decay=float(params["weight_decay"]),
+    )
+
+
+def _task_spec(task: str) -> tuple[str, str]:
     if task == "voltage":
-        return VoltageHParams(**hparams_values), VoltageLossWeights(**loss_values)
-    return SpowerHParams(**hparams_values), SpowerLossWeights(**loss_values)
+        return "bus_node_mask", "voltage"
+    if task == "spower":
+        return "gen_node_mask", "spower"
+    raise ValueError(f"Unsupported task: {task}")
 
 
 def _save_deployment_checkpoint(
     *,
     task: str,
     model_dir: Path,
-    output_root: Path,
-    result: dict,
-    hparams,
-    loss_weights,
+    state_dict: dict,
+    hparams: PairAwareHParams,
+    loss_weights: PairAwareLossWeights,
     attachment: dict[str, Any],
     config: dict,
     log_mean: float,
@@ -401,20 +485,13 @@ def _save_deployment_checkpoint(
     cuts: Sequence[float],
     epsilon: float,
     gate_threshold: float,
+    selected_output: str,
+    best_epoch: int,
+    best_validation_score: float,
 ) -> Path:
-    task_training_dir = (
-        output_root
-        / "training"
-        / f"{task}_pair_aware_six_class_gnn"
-    )
-    state_path = task_training_dir / "model_state.pt"
-    if not state_path.exists():
-        raise FileNotFoundError(f"Pair-aware training did not produce {state_path}")
-    state_dict = torch.load(state_path, map_location="cpu", weights_only=False)
-
     checkpoint = {
-        "checkpoint_version": 2,
-        "architecture": PAIR_AWARE_ARCHITECTURE,
+        "checkpoint_version": 3,
+        "model_type": MODEL_TYPE,
         "task": task,
         "model_state_dict": state_dict,
         "hparams": asdict(hparams),
@@ -424,33 +501,32 @@ def _save_deployment_checkpoint(
         "num_contingency_tokens": int(attachment["contingency_vocab_size"]),
         "node_vocab": attachment["node_vocab"],
         "contingency_vocab": attachment["contingency_vocab"],
-        "selected_output": str(result["selected_output"]),
-        "best_epoch": int(result["best_epoch"]),
-        "best_validation_score": result.get("best_validation_score"),
+        "selected_output": str(selected_output),
+        "best_epoch": int(best_epoch),
+        "best_validation_score": float(best_validation_score),
         "log_kpi_mean": float(log_mean),
         "log_kpi_std": float(log_std),
         "cuts": [float(value) for value in cuts],
         "epsilon": float(epsilon),
         "gate_threshold": float(gate_threshold),
-        "use_op_context": False,
-        "op_context_dim": 0,
         "class5_handling": "learned direct prediction; no deterministic override",
         "node_continuous_columns": [1, 2, 3, 4, 6],
         "edge_continuous_features": ["r", "x", "b1", "g1", "b2", "g2"],
         "config_version": (config.get("dynagnn", {}) or {}).get("version"),
     }
-    checkpoint_path = model_dir / f"pair_aware_{task}_best_model.pt"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = model_dir / f"{task}_best_model.pt"
     torch.save(checkpoint, checkpoint_path)
-
     metadata = {key: value for key, value in checkpoint.items() if key != "model_state_dict"}
-    (model_dir / f"pair_aware_{task}_best_hparams.json").write_text(
-        json.dumps(metadata, indent=2), encoding="utf-8"
+    (model_dir / f"{task}_best_hparams.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8"
     )
     return checkpoint_path
 
 
-def run_pair_aware_repository_training(
+def run_task_training(
     *,
+    task: str,
     train_scaled: list,
     val_scaled: list,
     test_scaled: list,
@@ -459,116 +535,181 @@ def run_pair_aware_repository_training(
     config: dict,
     attachment: dict[str, Any],
     logger: logging.Logger,
-) -> dict[str, dict]:
-    """Train Voltage and Spower pair-aware models through the standard pipeline."""
-    del training_dir  # model modules write below output_root/training themselves
-    model_cfg = config.get("model", {}) or {}
+) -> dict:
     training_cfg = config.get("training", {}) or {}
-    pair_training_cfg = training_cfg.get("pair_aware", {}) or {}
+    pair_cfg = training_cfg.get("pair_aware", {}) or {}
+    optuna_cfg = config.get("optuna", {}) or {}
+    hparam_space = optuna_cfg.get("hparams", {}) or {}
+    n_trials = int(optuna_cfg.get("n_trials", 15))
+    if n_trials < 1:
+        raise ValueError("optuna.n_trials must be at least 1")
 
-    if int(model_cfg.get("num_classes", 0)) != NUM_CLASSES:
-        raise ValueError(
-            f"{PAIR_AWARE_ARCHITECTURE} requires model.num_classes={NUM_CLASSES}"
-        )
-    op_context_mode = str(pair_training_cfg.get("op_context_mode", "none")).lower()
-    if op_context_mode != "none":
-        raise ValueError(
-            "Repository inference currently supports training.pair_aware.op_context_mode=none only"
-        )
+    target_mask_attr, task_name = _task_spec(task)
+    log_mean, log_std = _prepare_task(
+        task, train_scaled, [train_scaled, val_scaled, test_scaled]
+    )
+    logger.info("%s log-KPI mean=%.6f std=%.6f", task, log_mean, log_std)
 
-    output_root = Path(model_dir).parent
     batch_size = int(training_cfg.get("batch_size", 8))
+    train_loader = DataLoader(train_scaled, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_scaled, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_scaled, batch_size=batch_size, shuffle=False)
+
+    class_bins = ((config.get("kpi", {}) or {}).get("class_bins", {}) or {})
+    cuts = _float_list(
+        (class_bins.get(task_name, {}) or {}).get("cuts"),
+        expected=4,
+        label=f"kpi.class_bins.{task_name}.cuts",
+    )
+    cuts_array = np.asarray(cuts, dtype=np.float64)
+
     epochs = int(training_cfg.get("epochs", 60))
     patience = int(training_cfg.get("patience", 10))
-    epsilon = float(pair_training_cfg.get("epsilon", 1.0e-10))
-    gate_threshold = float(pair_training_cfg.get("gate_threshold", 0.5))
-    class_weight_mode = str(pair_training_cfg.get("class_weight_mode", "sqrt_inverse"))
-    gate_pos_weight_mode = str(pair_training_cfg.get("gate_pos_weight_mode", "balanced"))
-    selected_output = pair_training_cfg.get("selection_output")
-    if selected_output in ("", "auto", "none", "null"):
-        selected_output = None
-
-    results: dict[str, dict] = {}
-    for task in ("voltage", "spower"):
-        logger.info("Starting pair-aware %s training flow", task)
-        log_mean, log_std = _prepare_task(
-            task,
-            train_scaled,
-            [train_scaled, val_scaled, test_scaled],
+    seed = int(training_cfg.get("seed", 42))
+    epsilon = float(pair_cfg.get("epsilon", 1.0e-10))
+    gate_threshold = float(pair_cfg.get("gate_threshold", 0.5))
+    class_weight_mode = str(pair_cfg.get("class_weight_mode", "sqrt_inverse"))
+    gate_pos_weight_mode = str(pair_cfg.get("gate_pos_weight_mode", "balanced"))
+    selection_output = str(pair_cfg.get("selection_output", "auto")).strip().lower()
+    if selection_output in {"", "auto", "none", "null"}:
+        selection_output_arg = None
+    elif selection_output in {"class", "gated", "log_kpi"}:
+        selection_output_arg = selection_output
+    else:
+        raise ValueError(
+            "training.pair_aware.selection_output must be auto, class, gated, or log_kpi"
         )
-        logger.info("%s log-KPI mean=%.6f std=%.6f", task, log_mean, log_std)
+    loss_weights = _loss_weights(config)
 
-        train_loader = DataLoader(train_scaled, batch_size=batch_size, shuffle=True)
-        validation_loader = DataLoader(val_scaled, batch_size=batch_size, shuffle=False)
-        test_loader = DataLoader(test_scaled, batch_size=batch_size, shuffle=False)
+    task_dir = Path(training_dir) / task
+    task_dir.mkdir(parents=True, exist_ok=True)
+    trials_root = task_dir / "optuna_trials"
+    trials_root.mkdir(parents=True, exist_ok=True)
+    storage = f"sqlite:///{(task_dir / f'optuna_{task}.sqlite3').as_posix()}"
+    study_name = f"pair_aware_{task}"
 
-        hparams, loss_weights = _pair_configs(config, task)
-        kpi_cfg = config.get("kpi", {}) or {}
-        class_bins_cfg = kpi_cfg.get("class_bins", {}) or {}
-        task_kpi_cfg = class_bins_cfg.get(task, {}) or kpi_cfg.get(task, {}) or {}
-        cuts = _float_list(
-            task_kpi_cfg.get("cuts"),
-            expected=4,
-            label=f"kpi.class_bins.{task}.cuts",
-        )
-
-        common_kwargs = dict(
+    def objective(trial: optuna.Trial) -> float:
+        hparams = _sample_hparams(trial, hparam_space)
+        logger.info("%s Optuna trial %d hparams=%s", task, trial.number, asdict(hparams))
+        trial_root = trials_root / f"trial_{trial.number}"
+        result = run_pair_aware_training(
+            task=task,
+            target_mask_attr=target_mask_attr,
             train_loader=train_loader,
-            validation_loader=validation_loader,
-            test_loader=test_loader,
-            output_dir=output_root,
+            validation_loader=val_loader,
+            test_loader=None,
+            output_dir=trial_root,
             num_node_tokens=int(attachment["node_vocab_size"]),
             num_contingency_tokens=int(attachment["contingency_vocab_size"]),
-            op_context_dim=0,
-            use_op_context=False,
             hparams=hparams,
             loss_weights=loss_weights,
             log_mean=log_mean,
             log_std=log_std,
-            cuts=np.asarray(cuts, dtype=np.float64),
+            cuts=cuts_array,
             epsilon=epsilon,
             gate_threshold=gate_threshold,
             epochs=epochs,
             patience=patience,
             fixed_epochs=None,
-            selection_output=selected_output,
+            selection_output=selection_output_arg,
             class_weight_mode=class_weight_mode,
             gate_pos_weight_mode=gate_pos_weight_mode,
             logger=logger,
+            trial=trial,
         )
-        if task == "voltage":
-            result = run_voltage_pair_aware_training(**common_kwargs)
-        else:
-            result = run_spower_pair_aware_training(**common_kwargs)
+        score = result.get("best_validation_score")
+        if score is None:
+            raise RuntimeError(f"Optuna trial {trial.number} produced no validation score")
+        trial.set_user_attr("model_state_path", result["model_state_path"])
+        trial.set_user_attr("selected_output", result["selected_output"])
+        trial.set_user_attr("best_epoch", int(result["best_epoch"]))
+        return float(score)
 
-        checkpoint_path = _save_deployment_checkpoint(
-            task=task,
-            model_dir=Path(model_dir),
-            output_root=output_root,
-            result=result,
-            hparams=hparams,
-            loss_weights=loss_weights,
-            attachment=attachment,
-            config=config,
-            log_mean=log_mean,
-            log_std=log_std,
-            cuts=cuts,
-            epsilon=epsilon,
-            gate_threshold=gate_threshold,
-        )
-        logger.info(
-            "Saved pair-aware %s deployment checkpoint: %s (selected_output=%s)",
-            task,
-            checkpoint_path,
-            result["selected_output"],
-        )
-        results[task] = {
-            **result,
-            "checkpoint": str(checkpoint_path),
-            "log_kpi_mean": log_mean,
-            "log_kpi_std": log_std,
-        }
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=seed),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=min(5, n_trials)),
+        study_name=study_name,
+        storage=storage,
+        load_if_exists=True,
+    )
+    logger.info(
+        "%s Optuna study: %s (storage=%s) n_trials=%d objective=max validation score",
+        task.capitalize(),
+        study_name,
+        storage,
+        n_trials,
+    )
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    if study.best_trial.value is None:
+        raise RuntimeError(f"No completed Optuna trial for {task}")
 
-    summary_path = Path(model_dir) / "pair_aware_training_summary.json"
-    summary_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
-    return results
+    study.trials_dataframe().to_csv(task_dir / "optuna_trials.csv", index=False)
+    best_trial = study.best_trial
+    best_hparams = _hparams_from_best_params(best_trial.params)
+    state_path = Path(str(best_trial.user_attrs.get("model_state_path", "")))
+    if not state_path.exists():
+        raise FileNotFoundError(
+            f"Best {task} Optuna trial state was not found: {state_path}"
+        )
+    state_dict = torch.load(state_path, map_location="cpu", weights_only=False)
+    selected_output = str(best_trial.user_attrs.get("selected_output", "class"))
+    best_epoch = int(best_trial.user_attrs.get("best_epoch", 0))
+
+    test_result = evaluate_saved_pair_aware_model(
+        task=task,
+        target_mask_attr=target_mask_attr,
+        state_dict=state_dict,
+        train_loader=train_loader,
+        test_loader=test_loader,
+        output_dir=training_dir,
+        num_node_tokens=int(attachment["node_vocab_size"]),
+        num_contingency_tokens=int(attachment["contingency_vocab_size"]),
+        hparams=best_hparams,
+        loss_weights=loss_weights,
+        log_mean=log_mean,
+        log_std=log_std,
+        cuts=cuts_array,
+        epsilon=epsilon,
+        gate_threshold=gate_threshold,
+        selected_output=selected_output,
+        class_weight_mode=class_weight_mode,
+        gate_pos_weight_mode=gate_pos_weight_mode,
+        logger=logger,
+    )
+
+    checkpoint_path = _save_deployment_checkpoint(
+        task=task,
+        model_dir=model_dir,
+        state_dict=state_dict,
+        hparams=best_hparams,
+        loss_weights=loss_weights,
+        attachment=attachment,
+        config=config,
+        log_mean=log_mean,
+        log_std=log_std,
+        cuts=cuts,
+        epsilon=epsilon,
+        gate_threshold=gate_threshold,
+        selected_output=selected_output,
+        best_epoch=best_epoch,
+        best_validation_score=float(best_trial.value),
+    )
+    logger.info(
+        "Saved %s deployment checkpoint: %s (trial=%d, selected_output=%s)",
+        task,
+        checkpoint_path,
+        best_trial.number,
+        selected_output,
+    )
+    return {
+        "best_trial": int(best_trial.number),
+        "best_validation_score": float(best_trial.value),
+        "best_epoch": best_epoch,
+        "selected_output": selected_output,
+        "hparams": asdict(best_hparams),
+        "checkpoint": str(checkpoint_path),
+        "test": test_result,
+        "log_kpi_mean": log_mean,
+        "log_kpi_std": log_std,
+    }

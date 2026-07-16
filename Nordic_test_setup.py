@@ -11,7 +11,7 @@ YAML_TEMPLATE = """# Configuration for DYNAGNN scripts.
 # Before running main.py, set dynawo.path and data.path to absolute paths on your machine.
 
 dynagnn:
-  version: 1.11
+  version: 1.2
 
 dynawo:
   path: "{dynawo_env_sh}"
@@ -31,9 +31,9 @@ kpi:
   step_sec: 1.0
   class_bins:
     voltage:
-      cuts: [1e-7, 7.5e-7, 7.5e-6, 1.5e-5]  # 5 KPI classes (0-4) + 1 flag class => model.num_classes: 6
+      cuts: [1e-6, 2.25e-5, 3e-4, 5.625e-4]  # 5 KPI classes (0-4) + 1 flag class => model.num_classes: 6
     spower:
-      cuts: [1e-7, 7.5e-7, 7.5e-6, 1.5e-5]
+      cuts: [1e-6, 2.25e-5, 3e-4, 5.625e-4]
 
 model:
   num_classes: 6
@@ -47,9 +47,18 @@ training:
   training: 0.8
   validation: 0.1
   testing: 0.1
-  high_class_threshold: 4  # classes >= 4 (4 and 5) are "high" with num_classes: 6
-  selection_f1_weight: 0.5
-  selection_loss_weight: 0.1
+  
+  # Fixed loss construction and output-decoding settings.
+  pair_aware:
+    classification_weight: 1.0
+    regression_weight: 0.30
+    inactive_gate_weight: 0.20
+    ordinal_weight: 0.10
+    class_weight_mode: sqrt_inverse
+    gate_pos_weight_mode: balanced
+    gate_threshold: 0.50
+    epsilon: 1.0e-10
+    selection_output: auto
 
 optuna:
   n_trials: 5
@@ -57,42 +66,39 @@ optuna:
     hidden_dim:
       type: categorical
       choices: [64, 128, 256]
-    num_layers:
-      type: int
-      low: 2
-      high: 4
-    hidden_channels:
+    node_id_dim:
+      type: categorical
+      choices: [16, 24, 32]
+    contingency_id_dim:
       type: categorical
       choices: [16, 32, 64]
-    num_heads:
+    type_dim:
       type: categorical
-      choices: [1, 2, 4, 8]
-    dropout:
-      type: float
-      low: 0.1
-      high: 0.5
+      choices: [4, 8, 16]
+    pair_dim:
+      type: categorical
+      choices: [16, 32, 64]
     num_gnn_layers:
       type: int
       low: 2
       high: 4
+    decoder_hidden_dim:
+      type: categorical
+      choices: [128, 256, 512]
+    dropout:
+      type: float
+      low: 0.05
+      high: 0.35
     lr:
       type: float
-      low: 1.0e-4
-      high: 5.0e-3
+      low: 0.00001
+      high: 0.001
       log: true
     weight_decay:
       type: float
-      low: 1.0e-6
-      high: 1.0e-3
+      low: 0.0000001
+      high: 0.001
       log: true
-    under_penalty_lambda:
-      type: float
-      low: 0.0
-      high: 2.0
-    coral_prediction_threshold:
-      type: float
-      low: 0.3
-      high: 0.7
 
 inference:
   initialization_duration: 10.0  # steady-state run before graph build; use 0 to skip

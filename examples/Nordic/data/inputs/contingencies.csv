@@ -19,7 +19,7 @@ Contingency ID,Fault name,Type,Operating point
 18l,L2031-2032a,line,
 19l,L2031-2032b,line,
 20l,L4011-4012,line,
-21l,L4011-4021,line,"2, 3, 4, 5, 6, 7, 8, 9, 10"
+21l,L4011-4021,line,"2, 3, 4, 5, 6, 7, 8, 9"
 22l,L4011-4022,line,
 23l,L4011-4071,line,
 24l,L4012-4022,line,
@@ -64,17 +64,17 @@ Contingency ID,Fault name,Type,Operating point
 11b,1045_131,bus,
 12b,2031_221,bus,
 13b,2032_221,bus,
-14b,4011_401,bus,"2, 3, 4, 5, 6, 7, 8, 9, 10"
-15b,4012_401,bus,"2, 3, 4, 5, 6, 7, 8, 9, 10"
-16b,4021_401,bus,"2, 3, 4, 5, 6, 7, 8, 9, 10"
-17b,4022_401,bus,"3, 4, 5, 6, 7, 8, 9, 10"
+14b,4011_401,bus,"2, 3, 4, 5, 6, 7, 8, 9"
+15b,4012_401,bus,"2, 3, 4, 5, 6, 7, 8, 9"
+16b,4021_401,bus,"2, 3, 4, 5, 6, 7, 8, 9"
+17b,4022_401,bus,"3, 4, 5, 6, 7, 8, 9"
 18b,4031_401,bus,"4, 5, 6, 7, 8, 9"
-19b,4032_401,bus,"2, 3, 4, 5, 6, 7, 8, 9, 10"
+19b,4032_401,bus,"2, 3, 4, 5, 6, 7, 8, 9"
 20b,4041_401,bus,
-21b,4042_401,bus,"2, 3, 4, 5, 6, 7, 8, 10"
+21b,4042_401,bus,"2, 3, 4, 5, 6, 7, 8"
 22b,4043_401,bus,
 23b,4044_401,bus,"6, 7, 8, 9"
-24b,4045_401,bus,"3, 4, 5, 6, 7, 8, 9, 10"
+24b,4045_401,bus,"3, 4, 5, 6, 7, 8, 9"
 25b,4046_401,bus,
 26b,4047_401,bus,"2, 3, 4, 5, 6, 7, 8"
 27b,4051_401,bus,
@@ -104,7 +104,7 @@ Contingency ID,Fault name,Type,Operating point
 51b,B62___21,bus,
 52b,B63___21,bus,
 53b,B71___21,bus,
-54b,B72___21,bus,"2, 3, 4, 5, 6, 7, 8, 9, 10"
+54b,B72___21,bus,"2, 3, 4, 5, 6, 7, 8, 9"
 55b,BG01__11,bus,
 56b,BG02__11,bus,
 57b,BG03__11,bus,
@@ -112,19 +112,19 @@ Contingency ID,Fault name,Type,Operating point
 59b,BG05__11,bus,
 60b,BG06__11,bus,
 61b,BG07__11,bus,
-62b,BG08__11,bus,"2, 3, 4, 5, 6, 7, 8, 9, 10"
+62b,BG08__11,bus,"2, 3, 4, 5, 6, 7, 8, 9"
 63b,BG09__11,bus,
 64b,BG10__11,bus,
 65b,BG11__11,bus,
 66b,BG12__11,bus,
 67b,BG13__11,bus,
-68b,BG14__11,bus,"1, 2, 3, 4, 5, 6, 7, 8, 10"
+68b,BG14__11,bus,"1, 2, 3, 4, 5, 6, 7, 8"
 69b,BG15__11,bus,"2, 3, 4, 5, 6, 7, 8, 9"
 70b,BG16__11,bus,
 71b,BG17__11,bus,
-72b,BG18__11,bus,"2, 3, 4, 5, 6, 7, 8, 9, 10"
+72b,BG18__11,bus,"2, 3, 4, 5, 6, 7, 8, 9"
 73b,BG19__11,bus,
-74b,BG20__11,bus,"2, 3, 4, 5, 6, 7, 8, 9, 10"
+74b,BG20__11,bus,"2, 3, 4, 5, 6, 7, 8, 9"
 1g,g01,generator,
 2g,g02,generator,
 3g,g03,generator,
@@ -132,19 +132,19 @@ Contingency ID,Fault name,Type,Operating point
 5g,g05,generator,
 6g,g06,generator,
 7g,g07,generator,
-8g,g08,generator,"2, 3, 4, 5, 6, 7, 8, 9, 10"
+8g,g08,generator,"2, 3, 4, 5, 6, 7, 8, 9"
 9g,g09,generator,
 10g,g10,generator,
 11g,g11,generator,
 12g,g12,generator,
 13g,g13,generator,
-14g,g14,generator,"1, 2, 3, 4, 5, 6, 7, 8, 10"
+14g,g14,generator,"1, 2, 3, 4, 5, 6, 7, 8"
 15g,g15,generator,"2, 3, 4, 5, 6, 7, 8, 9"
 16g,g16,generator,
 17g,g17,generator,
-18g,g18,generator,"2, 3, 4, 5, 6, 7, 8, 9, 10"
+18g,g18,generator,"2, 3, 4, 5, 6, 7, 8, 9"
 19g,g19,generator,
-20g,g20,generator,"2, 3, 4, 5, 6, 7, 8, 9, 10"
+20g,g20,generator,"2, 3, 4, 5, 6, 7, 8, 9"
 1lo,01_1,load,
 2lo,02_1,load,
 3lo,03_1,load,
@@ -166,7 +166,7 @@ Contingency ID,Fault name,Type,Operating point
 19lo,62_1,load,
 20lo,63_1,load,
 21lo,71_1,load,
-22lo,72_1,load,"2, 3, 4, 5, 6, 7, 8, 9, 10"
+22lo,72_1,load,"2, 3, 4, 5, 6, 7, 8, 9"
 1t,Tr1-1041,transformer,
 2t,Tr1011-4011,transformer,
 3t,Tr1012-4012,transformer,
@@ -187,7 +187,7 @@ Contingency ID,Fault name,Type,Operating point
 18t,Tr13-1013,transformer,
 19t,Tr2-1042,transformer,
 20t,Tr2031-4031,transformer,
-21t,Tr2032-g8,transformer,"2, 3, 4, 5, 6, 7, 8, 9, 10"
+21t,Tr2032-g8,transformer,"2, 3, 4, 5, 6, 7, 8, 9"
 22t,Tr22-1022,transformer,
 23t,Tr3-1043,transformer,
 24t,Tr31-2031,transformer,
@@ -198,13 +198,13 @@ Contingency ID,Fault name,Type,Operating point
 29t,Tr4021-g11,transformer,
 30t,Tr4031-g12,transformer,
 31t,Tr4041-g13,transformer,
-32t,Tr4042-g14,transformer,"1, 2, 3, 4, 5, 6, 7, 8, 10"
+32t,Tr4042-g14,transformer,"1, 2, 3, 4, 5, 6, 7, 8"
 33t,Tr4047-g15,transformer,"2, 3, 4, 5, 6, 7, 8, 9"
 34t,Tr4051-g16,transformer,
 35t,Tr4061-g17,transformer,
-36t,Tr4063-g18,transformer,"2, 3, 4, 5, 6, 7, 8, 9, 10"
+36t,Tr4063-g18,transformer,"2, 3, 4, 5, 6, 7, 8, 9"
 37t,Tr4071-g19,transformer,
-38t,Tr4072-g20,transformer,"2, 3, 4, 5, 6, 7, 8, 9, 10"
+38t,Tr4072-g20,transformer,"2, 3, 4, 5, 6, 7, 8, 9"
 39t,Tr41-4041,transformer,
 40t,Tr42-4042,transformer,
 41t,Tr43-4043,transformer,
@@ -216,4 +216,4 @@ Contingency ID,Fault name,Type,Operating point
 47t,Tr62-4062,transformer,
 48t,Tr63-4063,transformer,
 49t,Tr71-4071,transformer,
-50t,Tr72-4072,transformer,"2, 3, 4, 5, 6, 7, 8, 9, 10"
+50t,Tr72-4072,transformer,"2, 3, 4, 5, 6, 7, 8, 9"

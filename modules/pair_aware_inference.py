@@ -10,15 +10,9 @@ import numpy as np
 import torch
 from torch_geometric.data import Batch
 
-from modules.gat_spower_pair_aware_six_class import (
-    PairAwareDirectSpowerModel,
-    PairAwareHParams as SpowerHParams,
-)
-from modules.gat_voltage_pair_aware_six_class import (
-    PairAwareDirectVoltageModel,
-    PairAwareHParams as VoltageHParams,
-)
-from modules.pair_aware_repository import PAIR_AWARE_ARCHITECTURE
+from modules.pair_aware_gine import PairAwareGINE, PairAwareHParams
+
+MODEL_TYPE = "pair_aware_gine"
 
 
 def load_pair_aware_checkpoint(path: Path, *, expected_task: str) -> dict[str, Any]:
@@ -28,10 +22,10 @@ def load_pair_aware_checkpoint(path: Path, *, expected_task: str) -> dict[str, A
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     if not isinstance(checkpoint, dict):
         raise TypeError(f"Expected checkpoint dictionary in {path}")
-    if checkpoint.get("architecture") != PAIR_AWARE_ARCHITECTURE:
+    if checkpoint.get("model_type") != MODEL_TYPE:
         raise ValueError(
-            f"Checkpoint {path} has architecture={checkpoint.get('architecture')!r}, "
-            f"expected {PAIR_AWARE_ARCHITECTURE!r}"
+            f"Checkpoint {path} has model_type={checkpoint.get('model_type')!r}, "
+            f"expected {MODEL_TYPE!r}"
         )
     if checkpoint.get("task") != expected_task:
         raise ValueError(
@@ -61,24 +55,15 @@ def load_pair_aware_checkpoint(path: Path, *, expected_task: str) -> dict[str, A
 def load_pair_aware_model(checkpoint: dict[str, Any], device: torch.device):
     task = str(checkpoint["task"])
     hparams_dict = dict(checkpoint["hparams"])
-    common = dict(
+    target_mask_attr = {"voltage": "bus_node_mask", "spower": "gen_node_mask"}.get(task)
+    if target_mask_attr is None:
+        raise ValueError(f"Unsupported checkpoint task: {task!r}")
+    model = PairAwareGINE(
         num_node_tokens=int(checkpoint["num_node_tokens"]),
         num_contingency_tokens=int(checkpoint["num_contingency_tokens"]),
-        op_context_dim=int(checkpoint.get("op_context_dim", 0)),
-        use_op_context=bool(checkpoint.get("use_op_context", False)),
+        target_mask_attr=target_mask_attr,
+        hparams=PairAwareHParams(**hparams_dict),
     )
-    if task == "voltage":
-        model = PairAwareDirectVoltageModel(
-            **common,
-            hparams=VoltageHParams(**hparams_dict),
-        )
-    elif task == "spower":
-        model = PairAwareDirectSpowerModel(
-            **common,
-            hparams=SpowerHParams(**hparams_dict),
-        )
-    else:
-        raise ValueError(f"Unsupported checkpoint task: {task!r}")
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
     model.eval()

@@ -6,11 +6,13 @@ Assigns class labels from **fixed raw KPI cut thresholds** and writes dataset ar
 
 - `main.py` (fourth pipeline stage)
 
-## Pipeline (v1.11)
+## Pipeline (v1.11 labeling, retained in v1.2)
 
 1. Read combined KPI and flag tables written by `curve_process`.
 2. For each KPI type: assign class labels from fixed raw cuts in `config.yaml` → override action/disconnection cells to the flag class.
 3. Save class-bins report, class-label datasets, and class-distribution plot.
+
+With $K$ cuts, labeling produces $K+1$ KPI severity classes (indices $0,\ldots,K$) plus one flag class ($K+1$). Set `model.num_classes` to **`len(cuts) + 2`**.
 
 ## Inputs
 
@@ -34,16 +36,16 @@ Rows use **`OP`**, **`Contingency`**, plus one column per network component id.
 
 ## Class bins (`kpi.class_bins`)
 
-`cuts` lists **strictly increasing raw KPI thresholds**, e.g. `[1e-7, 7.5e-7, 7.5e-6, 1.5e-5]`:
+`cuts` lists **strictly increasing raw KPI thresholds** $\tau_1 < \cdots < \tau_K$:
 
 | Class | Rule |
 |-------|------|
-| 0 | KPI ≤ 1e-7 |
-| 1 | 1e-7 < KPI ≤ 7.5e-7 |
-| 2 | 7.5e-7 < KPI ≤ 7.5e-6 |
-| 3 | 7.5e-6 < KPI ≤ 1.5e-5 |
-| 4 | KPI > 1.5e-5 |
-| 5 | Action / disconnection (voltage and spower: actions + DISC) |
+| $0$ | KPI $\le \tau_1$ |
+| $1,\ldots,K-1$ | $\tau_j <$ KPI $\le \tau_{j+1}$ |
+| $K$ | KPI $> \tau_K$ |
+| $K+1$ | Action / disconnection (voltage and spower: actions + DISC) |
+
+**Example (Nordic):** `cuts: [1e-6, 2.25e-5, 3e-4, 5.625e-4]` → classes 0–4 by KPI magnitude, flag class 5, `model.num_classes: 6`.
 
 Set `model.num_classes` to **`len(cuts) + 2`**.
 

@@ -18,6 +18,7 @@ The wider AMS stack decides how much model fidelity the power-system simulation 
 
 - **Input**: steady-state operating points + contingencies/events
 - **Output**: per-component dynamic activity predictions (hotspots)
+- **Model (v1.2)**: pair-aware residual GINE — direct multi-class prediction with independent Optuna tuning for Voltage and Spower
 
 ## Main entry points
 
@@ -65,7 +66,7 @@ After creating and activating a environment (Option A or B), install packages in
 
 DYNAGNN picks the device automatically: `cuda` (NVIDIA or AMD with ROCm) → `mps` (Apple Silicon) → `cpu`. There is no `device` setting in `config.yaml`; install a PyTorch build that exposes your GPU.
 
-> **Note (macOS + Dynawo Docker):** On Mac, Dynawo is commonly run via [Dynawo Docker](https://dynawo.github.io/install/) because there is no native macOS build. If you use that setup, **MPS is not available** for GAT training (PyTorch runs in the Linux container, where Apple’s MPS backend does not exist). Use the **CPU only** PyTorch install from the table below.
+> **Note (macOS + Dynawo Docker):** On Mac, Dynawo is commonly run via [Dynawo Docker](https://dynawo.github.io/install/) because there is no native macOS build. If you use that setup, **MPS is not available** for GINE training (PyTorch runs in the Linux container, where Apple’s MPS backend does not exist). Use the **CPU only** PyTorch install from the table below.
 
 **Step 1 — PyTorch** (minimum **2.0**; choose **one** row; confirm `cu*` / `rocm*` on [pytorch.org/get-started](https://pytorch.org/get-started/locally/)):
 
@@ -143,8 +144,8 @@ Earlier-stage outputs must already exist under `<data.path>/`. See [`docs/HowTo.
 
 `main.py` writes under `<data.path>/` (graphs, KPIs, datasets, `Simulations_Scenarios/`, log, trained models). On success:
 
-- `<data.path>/model/gat_voltage_best_model.pt`
-- `<data.path>/model/gat_spower_best_model.pt`
+- `<data.path>/model/voltage_best_model.pt`
+- `<data.path>/model/spower_best_model.pt`
 - `<data.path>/dynagnn.log`
 
 ---
@@ -176,7 +177,7 @@ python3 DYNAGNN.py --case-dir /path/to/operating_point --events-csv /path/to/eve
 
 ## Nordic example — train on bundled data
 
-The repository includes a ready-made **Nordic** case under `examples/Nordic/`: 10 operating points, `contingencies.csv` (lines, buses, generators, loads, transformers), and Dynawo inputs. Use it to run the full training pipeline end to end.
+The repository includes a ready-made **Nordic** case under `examples/Nordic/`: 9 operating points, `contingencies.csv` (lines, buses, generators, loads, transformers), and Dynawo inputs. Use it to run the full training pipeline end to end.
 
 ### What is in `examples/Nordic/`
 
@@ -188,7 +189,7 @@ examples/Nordic/
         ├── operating_point_1/   … Nordic.xiidm, Nordic.dyd, Nordic.jobs, …
         ├── operating_point_2/
         …
-        └── operating_point_10/
+        └── operating_point_9/
 ```
 
 - **Lines / transformers / loads** — **Fault name** is the IIDM equipment id (e.g. `L1011-1013a`, `Tr1-1041`, `01_1`).
@@ -224,9 +225,9 @@ source .venv/bin/activate   # if using venv
 python3 main.py
 ```
 
-`main.py` runs, in order: initialization and Dynawo contingency simulations → graph assets → curve/KPI post-processing (including combined KPI tables and split) → dataset build → GAT training. Use `--from-step` / `--to-step` to control the run range when rerunning (see [Step 1](#step-1--run-training-mainpy)).
+`main.py` runs, in order: initialization and Dynawo contingency simulations → graph assets → curve/KPI post-processing (including combined KPI tables and split) → dataset build → pair-aware GINE Optuna training. Use `--from-step` / `--to-step` to control the run range when rerunning (see [Step 1](#step-1--run-training-mainpy)).
 
-This example has **many** contingencies × 10 operating points; the first full run can take a long time. Progress and errors are written to:
+This example has **many** contingencies × 9 operating points; the first full run can take a long time. Progress and errors are written to:
 
 - `<data.path>/dynagnn.log`
 - `<data.path>/Simulations_Scenarios/simulation_results.csv` (resume: successful scenarios are skipped on re-run)
@@ -235,8 +236,8 @@ This example has **many** contingencies × 10 operating points; the first full r
 
 On success you should have:
 
-- `examples/Nordic/data/model/gat_voltage_best_model.pt`
-- `examples/Nordic/data/model/gat_spower_best_model.pt`
+- `examples/Nordic/data/model/voltage_best_model.pt`
+- `examples/Nordic/data/model/spower_best_model.pt`
 
 Intermediate outputs (graphs, KPI tables, datasets, split CSV) live alongside them under `examples/Nordic/data/` (`op_graphs/`, `KPI/`, `Dataset/`, `Simulations_Scenarios/`, etc.).
 
