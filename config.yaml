@@ -52,6 +52,7 @@ training:
 
 optuna:
   n_trials:
+  study_name:  # folder under data/training/ and data/model/
   hparams:
     hidden_dim:
       type: categorical

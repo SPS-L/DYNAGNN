@@ -8,11 +8,15 @@
   <img src="assets/RTE_logo.png" alt="RTE" height="110">
 </p>
 
-**DYNamic Activity Graph Neural Networks** — a component of the **AMS (Adaptive Model Selection)** module.
+**DYNamic Activity Graph Neural Networks** — predict **dynamic activity** (where high-fidelity dynamics matter vs where simplifications may be safe) from steady-state operating points and contingencies.
 
-## Context (AMS)
+## Context
 
-The wider AMS stack decides how much model fidelity the power-system simulation needs per region and per scenario. DYNAGNN supports that decision by predicting **dynamic activity hotspots** (where high-fidelity dynamics matter vs where simplifications are safe).
+This repository centres on **dynamic activity prediction**: a pair-aware residual GINE (v1.2) that estimates, for each component and contingency, how much dynamic behaviour to expect from steady-state inputs.
+
+That prediction stack is self-contained — **`main.py`** runs the full training pipeline; **`DYNAGNN.py`** applies the trained models to new operating points and writes per-component class predictions.
+
+The work also belongs to the wider **AMS (Adaptive Model Selection)** research programme, which asks where a time-domain simulation should retain full model detail. The optional **`AMS/`** folder implements one such workflow: **node-breaker model reduction** from TwinEU DSL scenarios. Ready-to-use **Nordic checkpoints** are bundled under `AMS/models/Nordic/`.
 
 ## What DYNAGNN does
 
@@ -22,11 +26,18 @@ The wider AMS stack decides how much model fidelity the power-system simulation 
 
 ## Main entry points
 
-- **Training**: `main.py`
-- **Inference**: `DYNAGNN.py` (run on new cases)
-- **Docs**: `docs/`
+| Script | Role |
+|--------|------|
+| **`main.py`** | Full **training** pipeline (simulations → KPIs → datasets → Optuna → checkpoints) |
+| **`DYNAGNN.py`** | **General inference** — per-component activity classes on new OPs / events (CSV outputs) |
+| **`AMS/main.py`** | **Model reduction** (optional) — TwinEU DSL → IIDM switch simplification; **Nordic checkpoints bundled** under `AMS/models/Nordic/` |
 
----
+See [`AMS/README.md`](AMS/README.md) for the AMS workflow.
+
+## Docs
+
+- **Setup & config**: [`docs/HowTo.md`](docs/HowTo.md)
+- **Training / inference / AMS**: [`docs/src/training.md`](docs/src/training.md), [`docs/src/inference.md`](docs/src/inference.md), [`AMS/README.md`](AMS/README.md)
 
 <a id="environment-setup"></a>
 
@@ -144,8 +155,8 @@ Earlier-stage outputs must already exist under `<data.path>/`. See [`docs/HowTo.
 
 `main.py` writes under `<data.path>/` (graphs, KPIs, datasets, `Simulations_Scenarios/`, log, trained models). On success:
 
-- `<data.path>/model/voltage_best_model.pt`
-- `<data.path>/model/spower_best_model.pt`
+- `<data.path>/model/<study_name>/voltage_best_model.pt`
+- `<data.path>/model/<study_name>/spower_best_model.pt`
 - `<data.path>/dynagnn.log`
 
 ---
@@ -174,6 +185,8 @@ python3 DYNAGNN.py --case-dir /path/to/operating_point --events-csv /path/to/eve
 - `scenario_<id>/prediction_voltage.csv`, `prediction_spower.csv`
 
 ---
+## Adaptive Model Selection (`AMS/main.py`)
+**AMS (`AMS/main.py`)** — optional **model reduction** from TwinEU DSL scenarios: checkpoints under `AMS/models/<network>/`, substation activity predictions, IIDM switch `retained` flags updated in place. Independent of `main.py`; does not read `config.yaml`. Ready-to-use **Nordic models** are in `AMS/models/Nordic/`. See [`AMS/README.md`](AMS/README.md).
 
 ## Nordic example — train on bundled data
 
@@ -200,12 +213,13 @@ examples/Nordic/
 
 Follow [Environment setup](#environment-setup) (venv or Conda, `pip install -r requirements.txt`, Dynawo installed).
 
-### Step 2 — Configure `config.yaml` (quick smoke test)
+### Step 2 — Configure `config.yaml`
 
-Run the helper script first. It writes the Nordic smoke-test defaults into the project-root [`config.yaml`](config.yaml), and fills:
+Run the helper script first. It writes the Nordic example defaults into the project-root [`config.yaml`](config.yaml), and fills:
 
 - **`dynawo.path`** from your CLI argument
 - **`data.path`** as `<DYNAGNN>/examples/Nordic/data` (derived from the repo root)
+- **`optuna.study_name`** (e.g. `nordic_v1`) for `data/training/<study_name>/` and `data/model/<study_name>/`
 
 ```bash
 cd "/absolute/path/to/DYNAGNN"
@@ -215,7 +229,7 @@ python3 Nordic_test_setup.py --dynawo-env "/absolute/path/to/myEnvDynawo.sh" --f
 See [`docs/HowTo.md`](docs/HowTo.md) for:
 
 - The Nordic operating-point table
-- The full Nordic smoke-test `config.yaml` block (exactly what `Nordic_test_setup.py` writes)
+- The full Nordic `config.yaml` block (exactly what `Nordic_test_setup.py` writes)
 
 ### Step 3 — Run from the project root
 
@@ -236,8 +250,8 @@ This example has **many** contingencies × 9 operating points; the first full ru
 
 On success you should have:
 
-- `examples/Nordic/data/model/voltage_best_model.pt`
-- `examples/Nordic/data/model/spower_best_model.pt`
+- `examples/Nordic/data/model/<study_name>/voltage_best_model.pt`
+- `examples/Nordic/data/model/<study_name>/spower_best_model.pt`
 
 Intermediate outputs (graphs, KPI tables, datasets, split CSV) live alongside them under `examples/Nordic/data/` (`op_graphs/`, `KPI/`, `Dataset/`, `Simulations_Scenarios/`, etc.).
 
@@ -253,4 +267,3 @@ python3 DYNAGNN.py \
 
 Predictions are written under `<case-dir>/dynagnn_output/`.
 
----

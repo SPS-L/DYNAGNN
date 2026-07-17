@@ -88,6 +88,7 @@ Example (for **bus**, use **Type** `bus` in both cases; **Fault name** is a `bus
 | | `testing` | float | Test fraction or OP count |
 | | `pair_aware.*` | see below | Fixed loss / decoding settings (not Optuna-tuned) |
 | **optuna** | `n_trials` | integer | Hyperparameter trials per task (Voltage and Spower are independent) |
+| | `study_name` | string (**required**) | Folder name for `data/training/<study_name>/` and `data/model/<study_name>/` |
 | | `hparams.*` | see `config.yaml` | Search spaces for model capacity + optimizer |
 | **inference** | `initialization_duration` | float (s), or `0` / omit | Steady-state run for `DYNAGNN.py` |
 
@@ -122,13 +123,13 @@ The other `pair_aware` keys do **not** enter $\mathcal{L}$ as scalar multipliers
 
 | Key | Where it goes |
 |-----|----------------|
-| `class_weight_mode` | Builds per-class weights inside $\mathcal{L}_{\mathrm{CE}}$ (e.g. `sqrt_inverse`) |
+| `class_weight_mode` | Builds per-class weights inside $\mathcal{L}_{\mathrm{CE}}$ (e.g. `inverse`, `sqrt_inverse`) |
 | `gate_pos_weight_mode` | Builds the positive-class weight inside $\mathcal{L}_{\mathrm{BCE}}$ (e.g. `balanced`) |
 | `epsilon` | $\varepsilon$ in $\log_{10}(\mathrm{KPI}+\varepsilon)$ when forming regression targets (and when inverting log-KPI decode) |
 | `gate_threshold` | Decode only: treat as class 0 when $\sigma(\mathrm{gate})\ge$ threshold (`gated` path) |
 | `selection_output` | Which decode path is scored for checkpoint / Optuna selection: `auto`, `class`, `gated`, or `log_kpi` |
 
-**Example (Nordic smoke test):** $w_{\mathrm{cls}}=1.0$, $w_{\mathrm{reg}}=0.30$, $w_{\mathrm{gate}}=0.20$, $w_{\mathrm{ord}}=0.10$, `epsilon: 1.0e-10`, `selection_output: auto`.
+**Example (Nordic defaults from `Nordic_test_setup.py`):** $w_{\mathrm{cls}}=1.0$, $w_{\mathrm{reg}}=0.30$, $w_{\mathrm{gate}}=0.15$, $w_{\mathrm{ord}}=0.15$, `class_weight_mode: inverse`, `epsilon: 1.0e-10`, `selection_output: class`.
 
 ### `optuna.hparams` (tuned)
 
@@ -238,7 +239,7 @@ python3 main.py --from-step dataset --to-step training
 |-------------|-------------|-------------------------------------------|
 | `curve_process` | Combined KPI tables + split | `KPI/KPI_voltage.csv`, `KPI/KPI_spower.csv`, `Dataset/train_val_test_split.csv` |
 | `dataset` | Class-label datasets | `Dataset/Dataset_Voltage.csv`, `Dataset/Dataset_Spower.csv`, `Dataset/KPI_class_bins.csv` |
-| `training` | Trained models | `model/voltage_best_model.pt`, `model/spower_best_model.pt` |
+| `training` | Trained models | `model/<study_name>/voltage_best_model.pt`, `model/<study_name>/spower_best_model.pt`, `training/<study_name>/<task>/plots/` |
 
 See the per-stage input tables in [`src/simulate.md`](src/simulate.md), [`src/build_op_assets.md`](src/build_op_assets.md), [`src/curves_post_process.md`](src/curves_post_process.md), [`src/dataset_construction.md`](src/dataset_construction.md), and [`src/training.md`](src/training.md).
 
@@ -262,7 +263,7 @@ Each `main.py` run still recreates `<data.path>/dynagnn.log` from scratch.
 | **8** | 5658.8 |
 | **9** | 5207.7 |
 
-### Nordic smoke-test `config.yaml` (written by `Nordic_test_setup.py`)
+### Nordic `config.yaml` (written by `Nordic_test_setup.py`)
 
 Run:
 
@@ -276,7 +277,7 @@ The following is **exactly what the script writes** to `config.yaml` (shown here
 ```yaml
 # Configuration for DYNAGNN scripts.
 #
-# Quick smoke test defaults for the bundled Nordic example (examples/Nordic/data).
+# Nordic example defaults (examples/Nordic/data).
 # Before running main.py, set dynawo.path and data.path to absolute paths on your machine.
 
 dynagnn:
@@ -308,33 +309,34 @@ model:
   num_classes: 6
 
 training:
-  epochs: 30          # keep low for a quick smoke test
-  patience: 8
+  epochs: 150
+  patience: 20
   batch_size: 16
   split_mode: operating_point
   seed: 42
-  training: 0.8
+  training: 0.7
   validation: 0.1
-  testing: 0.1
+  testing: 0.2
 
   # Fixed loss construction and output-decoding settings.
   pair_aware:
     classification_weight: 1.0
     regression_weight: 0.30
-    inactive_gate_weight: 0.20
-    ordinal_weight: 0.10
-    class_weight_mode: sqrt_inverse
+    inactive_gate_weight: 0.15
+    ordinal_weight: 0.15
+    class_weight_mode: inverse
     gate_pos_weight_mode: balanced
     gate_threshold: 0.50
     epsilon: 1.0e-10
-    selection_output: auto
+    selection_output: class
 
 optuna:
-  n_trials: 5
+  n_trials: 50
+  study_name: nordic_v1
   hparams:
     hidden_dim:
       type: categorical
-      choices: [64, 128, 256]
+      choices: [128, 256]
     node_id_dim:
       type: categorical
       choices: [16, 24, 32]
@@ -343,25 +345,25 @@ optuna:
       choices: [16, 32, 64]
     type_dim:
       type: categorical
-      choices: [4, 8, 16]
+      choices: [8, 16]
     pair_dim:
       type: categorical
-      choices: [16, 32, 64]
+      choices: [8, 16, 32]
     num_gnn_layers:
       type: int
-      low: 2
-      high: 4
+      low: 3
+      high: 5
     decoder_hidden_dim:
       type: categorical
       choices: [128, 256, 512]
     dropout:
       type: float
-      low: 0.05
-      high: 0.35
+      low: 0.02
+      high: 0.25
     lr:
       type: float
       low: 0.00001
-      high: 0.001
+      high: 0.0015
       log: true
     weight_decay:
       type: float
@@ -373,9 +375,9 @@ inference:
   initialization_duration: 10.0  # steady-state run before graph build; use 0 to skip
 ```
 
-With `model.num_classes = len(cuts) + 2`, the highest class index is the action/disconnection **flag** class. Voltage and Spower are tuned independently with Optuna; validation checkpoints maximize a balanced multi-class selection score (see [`src/training.md`](src/training.md)). Deployment checkpoints are written as `voltage_best_model.pt` and `spower_best_model.pt`.
+With `model.num_classes = len(cuts) + 2`, the highest class index is the action/disconnection **flag** class. Voltage and Spower are tuned independently with Optuna; validation checkpoints maximize a balanced multi-class selection score (see [`src/training.md`](src/training.md)). Deployment checkpoints are written under `model/<study_name>/` as `voltage_best_model.pt` and `spower_best_model.pt`.
 
-**Example (Nordic smoke test):** four cuts → classes 0–4 by KPI magnitude, flag class 5, `num_classes: 6`.
+**Example (Nordic):** four cuts → classes 0–4 by KPI magnitude, flag class 5, `num_classes: 6`.
 
 ### KPI class bins (v1.11 labeling, used by v1.2)
 
@@ -390,3 +392,50 @@ See [KPI cut thresholds — recommendations](#kpi-cut-thresholds--recommendation
 Set `model.num_classes` to **`len(cuts) + 2`**. Applied cuts are recorded in `<data.path>/Dataset/KPI_class_bins.csv`.
 
 **Example (Nordic):** `cuts: [1e-6, 2.25e-5, 3e-4, 5.625e-4]` → `num_classes: 6`.
+
+---
+
+## AMS — model reduction (`AMS/`)
+
+The **`AMS/`** folder is a **standalone application** for **Adaptive Model Selection**: it uses trained DYNAGNN checkpoints to simplify node-breaker models before simulation. It is **not** invoked by `main.py` and does not use `config.yaml`.
+
+### How it fits the repository
+
+| Entry point | Role |
+|-------------|------|
+| `main.py` | Training pipeline (simulations → KPIs → checkpoints) |
+| `DYNAGNN.py` | Inference on new operating points and events |
+| `AMS/main.py` | Optional model reduction from TwinEU DSL (IIDM switch retention) |
+
+Dynamic activity prediction is the core of DYNAGNN. **`AMS/`** is an optional companion module for one AMS use case; it reuses trained checkpoints but is not part of the training or standard inference scripts.
+
+### Bundled Nordic models
+
+Ready-to-use deployment checkpoints for the Nordic case are in **`AMS/models/Nordic/`** (voltage/spower `.pt` files and scalers).
+
+### Checkpoints (other networks)
+
+```bash
+NETWORK=MyCase
+mkdir -p "AMS/models/$NETWORK"
+cp "<data.path>/model/<study_name>/voltage_best_model.pt" "AMS/models/$NETWORK/"
+cp "<data.path>/model/<study_name>/spower_best_model.pt" "AMS/models/$NETWORK/"
+cp "<data.path>/model/<study_name>/x_scaler.pkl" "AMS/models/$NETWORK/"
+cp "<data.path>/model/<study_name>/edge_attr_scaler.pkl" "AMS/models/$NETWORK/"
+```
+
+Multiple networks can coexist (`AMS/models/Nordic/`, `AMS/models/MyCase/`, …). Select with `--network` on the CLI.
+
+### Run
+
+```bash
+cd AMS
+python3 main.py <scenario.dsl> <network.xiidm> <network.dyd> --network Nordic --epsilon 1
+```
+
+- **`--epsilon`** — retain node-breaker switches in substations whose max predicted class is ≥ this value (default `1.0`).
+- **`--json`** — optionally export parsed DSL locations to JSON under `AMS/`.
+
+The IIDM is **modified in place**. Use a copy if you need the original file.
+
+Full reference: [`AMS/README.md`](../AMS/README.md).

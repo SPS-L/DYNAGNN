@@ -26,9 +26,12 @@ Repository integration for pair-aware GINE training: attach shared identity/even
 
 | Path | Content |
 |------|---------|
-| `data/model/<task>_best_model.pt` | Deployment checkpoint (weights, vocabs, cuts, decode mode, …) |
-| `data/model/<task>_best_hparams.json` | Same metadata without weights |
-| `data/training/<task>/optuna_*.sqlite3`, `optuna_trials.csv` | Optuna study artifacts |
+| `data/model/<study_name>/<task>_best_model.pt` | Deployment checkpoint (weights, vocabs, cuts, decode mode, …) |
+| `data/model/<study_name>/<task>_best_hparams.json` | Same metadata without weights |
+| `data/model/<study_name>/x_scaler.pkl`, `edge_attr_scaler.pkl` | Train-fit feature scalers |
+| `data/training/<study_name>/<task>/optuna_*.sqlite3`, `optuna_trials.csv` | Optuna study artifacts |
+| `data/training/<study_name>/<task>/optuna_trials/trial_N/` | Per-trial `history.csv`, `model_state.pt`, `model_metadata.json` |
+| `data/training/<study_name>/<task>/plots/` | Final diagnostic figures (incl. loss curve from best trial) |
 
 ## Flow (per task)
 

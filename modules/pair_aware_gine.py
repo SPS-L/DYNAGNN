@@ -22,6 +22,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
+from modules.training_plots import save_training_plots
+
 import numpy as np
 import pandas as pd
 import torch
@@ -805,9 +807,9 @@ def _log_test_breakdown(
     logger: logging.Logger, metrics: dict, *, selected_output: str
 ) -> None:
     num_classes = len(metrics["class_support"])
+    logger.info("---------- TEST RESULTS (decode=%s) ----------", selected_output)
     logger.info(
-        "TEST full-class selected=%s — %d/%d acc=%.4f bal=%.4f macroF1=%.4f MAE=%.4f",
-        selected_output,
+        "Summary: %d/%d correct | acc=%.4f | bal_acc=%.4f | macro_F1=%.4f | MAE=%.4f",
         metrics["correct"],
         metrics["total"],
         metrics["accuracy"],
@@ -815,33 +817,33 @@ def _log_test_breakdown(
         metrics["macro_f1"],
         metrics["mae"],
     )
-    logger.info("TEST per-class accuracy (correct/support; recall):")
+    per_class = []
     for cls in range(num_classes):
         support = int(metrics["class_support"][cls])
         correct = int(metrics["class_correct"][cls])
-        accuracy = float(metrics["class_accuracy"][cls])
-        precision = float(metrics["class_precision"][cls])
-        f1 = float(metrics["class_f1"][cls])
-        logger.info(
-            "  Class %d: %d/%d = %.4f | precision=%.4f F1=%.4f",
-            cls,
-            correct,
-            support,
-            accuracy,
-            precision,
-            f1,
-        )
-    logger.info("TEST exact ordinal error offsets (prediction - true):")
+        recall = float(metrics["class_accuracy"][cls])
+        per_class.append(f"{cls}:{correct}/{support} ({recall:.3f})")
+    logger.info("Per-class recall: %s", "  ".join(per_class))
+
+    # Compact offset summary: exact / within-1 / under / over
+    logger.info(
+        "Offsets: exact=%.3f | within_1=%.3f | under=%.3f | over=%.3f",
+        float(metrics["error_offset_rate"].get("0", 0.0)),
+        float(metrics["within_one_accuracy"]),
+        float(metrics["under_rate"]),
+        float(metrics["over_rate"]),
+    )
+    # Full offset table kept for inspection (short lines)
+    offset_bits = []
     for offset in range(-(num_classes - 1), num_classes):
         key = str(offset)
-        label = f"{offset:+d}" if offset != 0 else "0 (exact)"
-        logger.info(
-            "  %s: %d/%d = %.4f",
-            label,
-            int(metrics["error_offset_count"][key]),
-            int(metrics["total"]),
-            float(metrics["error_offset_rate"][key]),
-        )
+        rate = float(metrics["error_offset_rate"][key])
+        if rate <= 0.0:
+            continue
+        label = f"{offset:+d}" if offset != 0 else "0"
+        offset_bits.append(f"{label}={rate:.3f}")
+    if offset_bits:
+        logger.info("Non-zero offset rates: %s", "  ".join(offset_bits))
 
 def run_pair_aware_training(
     *,
@@ -885,12 +887,29 @@ def run_pair_aware_training(
     class_weights = compute_class_weights(train_loader, class_weight_mode, device, target_mask_attr, num_classes)
     inactive_pos_weight = compute_gate_pos_weight(train_loader, gate_pos_weight_mode, device, target_mask_attr, num_classes)
 
-    logger.info("Pair-aware direct GNN device: %s", device)
-    logger.info("HParams: %s", asdict(hparams))
-    logger.info("Loss weights: %s", asdict(loss_weights))
-    logger.info("num_classes: %d", num_classes)
-    logger.info("Class weights: %s", None if class_weights is None else class_weights.detach().cpu().tolist())
-    logger.info("Inactive pos weight: %s", None if inactive_pos_weight is None else inactive_pos_weight.detach().cpu().tolist())
+    trial_label = None if trial is None else int(trial.number)
+    if trial_label is None:
+        # Standalone / final-eval style: log full setup once.
+        logger.info("Device: %s | num_classes=%d", device, num_classes)
+        logger.info("HParams: %s", asdict(hparams))
+        logger.info("Loss weights: %s", asdict(loss_weights))
+        logger.info(
+            "Class weights: %s",
+            None if class_weights is None else [round(float(v), 4) for v in class_weights.detach().cpu().tolist()],
+        )
+        logger.info(
+            "Inactive gate pos_weight: %s",
+            None
+            if inactive_pos_weight is None
+            else [round(float(v), 4) for v in inactive_pos_weight.detach().cpu().tolist()],
+        )
+    else:
+        logger.info(
+            "--- %s trial %d | %s ---",
+            task,
+            trial_label,
+            ", ".join(f"{k}={v}" for k, v in asdict(hparams).items()),
+        )
 
     history: list[dict] = []
     best_score = -float("inf")
@@ -899,6 +918,8 @@ def run_pair_aware_training(
     best_state: Optional[dict] = None
     stale = 0
     total_epochs = int(fixed_epochs) if fixed_epochs is not None else int(epochs)
+    stopped_early = False
+    pruned = False
 
     for epoch in range(1, total_epochs + 1):
         train_result = _run_epoch(
@@ -951,46 +972,61 @@ def run_pair_aware_training(
             row["val_selected_score"] = score
             scheduler.step(score)
 
+            improved = False
             if fixed_epochs is None and score > best_score + 1.0e-6:
                 best_score = score
                 best_epoch = epoch
                 best_output = selected
                 best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
                 stale = 0
+                improved = True
             elif fixed_epochs is None:
                 stale += 1
+
+            marker = "*" if improved else " "
+            logger.info(
+                "Epoch %03d %s train_loss=%.4f | val_score=%.4f [%s]",
+                epoch,
+                marker,
+                train_result["loss"]["total"],
+                score,
+                selected,
+            )
+            history.append(row)
 
             if trial is not None:
                 trial.report(score, step=epoch)
                 if trial.should_prune():
                     import optuna
+
+                    pruned = True
+                    logger.info(
+                        "Trial %d pruned at epoch %d (val_score=%.4f)",
+                        trial_label,
+                        epoch,
+                        score,
+                    )
                     raise optuna.TrialPruned()
 
-            logger.info(
-                "Epoch %03d | train=%.4f | val class=%.4f gated=%.4f logKPI=%.4f | selected=%s %.4f",
-                epoch,
-                train_result["loss"]["total"],
-                candidates["class"],
-                candidates["gated"],
-                candidates["log_kpi"],
-                selected,
-                score,
-            )
             if fixed_epochs is None and stale >= int(patience):
-                logger.info("Early stopping at epoch %d", epoch)
+                stopped_early = True
+                logger.info(
+                    "Early stopping at epoch %d (best_epoch=%d, best_val=%.4f [%s])",
+                    epoch,
+                    best_epoch,
+                    best_score,
+                    best_output,
+                )
                 break
         else:
             best_epoch = epoch
             logger.info(
-                "Epoch %03d/%03d | train=%.4f | train class=%.4f gated=%.4f logKPI=%.4f",
+                "Epoch %03d/%03d | train_loss=%.4f",
                 epoch,
                 total_epochs,
                 train_result["loss"]["total"],
-                train_result["full_class_class"]["accuracy"],
-                train_result["full_class_gated"]["accuracy"],
-                train_result["full_class_log_kpi"]["accuracy"],
             )
-        history.append(row)
+            history.append(row)
 
     if validation_loader is not None and fixed_epochs is None:
         if best_state is None:
@@ -1000,11 +1036,22 @@ def run_pair_aware_training(
         best_epoch = int(fixed_epochs)
         best_output = selection_output or "class"
 
-    training_dir = output_dir / "training" / task
-    training_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(history).to_csv(training_dir / "history.csv", index=False)
-    torch.save(model.state_dict(), training_dir / "model_state.pt")
-    (training_dir / "model_metadata.json").write_text(
+    if trial_label is not None and not pruned:
+        logger.info(
+            "Trial %d finished | trained_epochs=%d | best_epoch=%d | best_val=%.4f [%s]%s",
+            trial_label,
+            len(history),
+            best_epoch,
+            best_score if best_score != -float("inf") else float("nan"),
+            best_output,
+            " | early_stop" if stopped_early else "",
+        )
+
+    artifact_dir = Path(output_dir)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(history).to_csv(artifact_dir / "history.csv", index=False)
+    torch.save(model.state_dict(), artifact_dir / "model_state.pt")
+    (artifact_dir / "model_metadata.json").write_text(
         json.dumps(
             {
                 "hparams": asdict(hparams),
@@ -1031,7 +1078,7 @@ def run_pair_aware_training(
         "trained_epochs": int(len(history)),
         "selected_output": best_output,
         "best_validation_score": None if best_score == -float("inf") else float(best_score),
-        "model_state_path": str(training_dir / "model_state.pt"),
+        "model_state_path": str(artifact_dir / "model_state.pt"),
     }
     if test_loader is not None:
         test_result = _run_epoch(
@@ -1055,8 +1102,29 @@ def run_pair_aware_training(
         result["selected_test_full_class"] = test_result[f"full_class_{best_output}"]
         result["selected_test_activity"] = test_result[f"activity_{best_output}"]
         result["selected_test_combined"] = result["selected_test_full_class"]
-        _save_test_outputs(training_dir, test_result, best_output, num_classes)
+        _save_test_outputs(artifact_dir, test_result, best_output, num_classes)
         _log_test_breakdown(logger, result["selected_test_full_class"], selected_output=best_output)
+
+        # --- diagnostic plots ---
+        pred_col = {
+            "class": "class_prediction",
+            "gated": "gated_prediction",
+            "log_kpi": "log_kpi_prediction",
+        }.get(best_output, "class_prediction")
+        predictions_df = pd.DataFrame(test_result.get("predictions", []))
+        if "selected_prediction" in predictions_df.columns:
+            pred_col = "selected_prediction"
+        confusion = result["selected_test_full_class"].get("confusion_matrix", [])
+        save_training_plots(
+            training_dir=artifact_dir.parent,
+            task=task,
+            history_csv=artifact_dir / "history.csv",
+            confusion_matrix=confusion,
+            predictions_df=predictions_df,
+            num_classes=num_classes,
+            selected_pred_col=pred_col,
+        )
+
     return result
 
 
@@ -1082,8 +1150,13 @@ def evaluate_saved_pair_aware_model(
     gate_pos_weight_mode: str,
     num_classes: int,
     logger: logging.Logger,
+    history_csv: Optional[Path] = None,
 ) -> dict:
-    """Load a saved state, evaluate it on test data, and export test metrics."""
+    """Load a saved state, evaluate it on test data, and export test metrics.
+
+    ``history_csv`` should point at the winning Optuna trial's ``history.csv``
+    (beside ``model_state.pt``) so the loss curve is written in that trial folder.
+    """
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     )
@@ -1125,6 +1198,34 @@ def evaluate_saved_pair_aware_model(
     _save_test_outputs(task_dir, test_result, selected_output, num_classes)
     selected_metrics = test_result[f"full_class_{selected_output}"]
     _log_test_breakdown(logger, selected_metrics, selected_output=selected_output)
+
+    # --- diagnostic plots ---
+    pred_col_map = {
+        "class": "class_prediction",
+        "gated": "gated_prediction",
+        "log_kpi": "log_kpi_prediction",
+    }
+    pred_col = pred_col_map.get(selected_output, "class_prediction")
+    predictions_df = pd.DataFrame(test_result.get("predictions", []))
+    if "selected_prediction" in predictions_df.columns:
+        pred_col = "selected_prediction"
+    confusion = selected_metrics.get("confusion_matrix", [])
+    plots_training_dir = Path(output_dir)
+    history_path = (
+        Path(history_csv)
+        if history_csv is not None
+        else plots_training_dir / task / "history.csv"
+    )
+    save_training_plots(
+        training_dir=plots_training_dir,
+        task=task,
+        history_csv=history_path,
+        confusion_matrix=confusion,
+        predictions_df=predictions_df,
+        num_classes=num_classes,
+        selected_pred_col=pred_col,
+    )
+
     return {
         "loss": test_result["loss"],
         "full_class_class": test_result["full_class_class"],

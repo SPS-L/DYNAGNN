@@ -841,8 +841,21 @@ def main() -> None:
     log_step_banner("training")
     logger = get_logger()
 
-    training_dir = DATA_DIR / "training"
-    model_dir = DATA_DIR / "model"
+    optuna_cfg = cfg.get("optuna", {}) or {}
+    if "study_name" not in optuna_cfg or not str(optuna_cfg.get("study_name", "")).strip():
+        raise KeyError(
+            "Missing required config key: optuna.study_name "
+            "(folder name under data/training/<study_name>/<task>/)"
+        )
+    study_name = str(optuna_cfg["study_name"]).strip()
+    # Keep study folders portable across filesystems.
+    if any(sep in study_name for sep in ("/", "\\")) or study_name in {".", ".."}:
+        raise ValueError(
+            f"optuna.study_name must be a single folder name (no path separators), got {study_name!r}"
+        )
+
+    training_dir = DATA_DIR / "training" / study_name
+    model_dir = DATA_DIR / "model" / study_name
     model_dir.mkdir(parents=True, exist_ok=True)
     training_dir.mkdir(parents=True, exist_ok=True)
 
@@ -852,6 +865,12 @@ def main() -> None:
     logger.info("Using device: %s", _device())
     logger.info("Seed: %d", seed)
     logger.info("network.country_filter: %s", country_filter)
+    logger.info(
+        "Optuna study_name: %s (training=%s, model=%s)",
+        study_name,
+        training_dir,
+        model_dir,
+    )
 
     if "num_classes" not in model_cfg:
         raise KeyError("Missing required config key: model.num_classes (in config.yaml)")
@@ -958,7 +977,6 @@ def main() -> None:
 
     logger.info("Scaled shared dataset ready. batch_size=%d", batch_size)
 
-    logger.info("Starting Voltage pair-aware GINE Optuna training")
     voltage_result = run_voltage_training(
         train_scaled=train_scaled,
         val_scaled=val_scaled,
@@ -970,7 +988,6 @@ def main() -> None:
         logger=logger,
     )
 
-    logger.info("Starting Spower pair-aware GINE Optuna training")
     spower_result = run_spower_training(
         train_scaled=train_scaled,
         val_scaled=val_scaled,
@@ -986,4 +1003,10 @@ def main() -> None:
         json.dumps({"voltage": voltage_result, "spower": spower_result}, indent=2),
         encoding="utf-8",
     )
-    logger.info("All pair-aware GINE Optuna training flows completed.")
+    logger.info(
+        "Training complete | voltage best_trial=%s val=%.4f | spower best_trial=%s val=%.4f",
+        voltage_result.get("best_trial"),
+        float(voltage_result.get("best_validation_score", float("nan"))),
+        spower_result.get("best_trial"),
+        float(spower_result.get("best_validation_score", float("nan"))),
+    )

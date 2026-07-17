@@ -4,6 +4,8 @@
 
 Not part of `main.py`; run standalone after training.
 
+For **TwinEU DSL → IIDM model reduction** (switch retention), use the separate **`AMS/`** application instead — see [`AMS/README.md`](../../AMS/README.md). `DYNAGNN.py` exports prediction CSVs; AMS updates the IIDM in place.
+
 ## Command
 
 ```bash
@@ -17,7 +19,7 @@ python3 DYNAGNN.py --case-dir /path/to/operating_point --events-csv /path/to/eve
 | `--case-dir` | One OP folder (IIDM, `.dyd`, `.jobs`, …) |
 | `--events-csv` | One row per scenario (see below) |
 | `config.yaml` | `data.path`, `model.num_classes`, `network.country_filter`, `inference.initialization_duration`, `dynawo.path` |
-| `<data.path>/model/` | `voltage_best_model.pt`, `spower_best_model.pt`, scalers, hparams JSON |
+| `<data.path>/model/<study_name>/` | `voltage_best_model.pt`, `spower_best_model.pt`, scalers (`optuna.study_name`) |
 
 ## `events.csv`
 
@@ -52,7 +54,7 @@ Under `<case-dir>/dynagnn_output/`:
 1. Optional **initialization** when `inference.initialization_duration` > 0 (updates IIDM in place).
 2. Compute **electrical distance** CSV from the case IIDM.
 3. **Build graph** (`graph_construction.build_graph`, compact).
-4. Load **scalers** and **pair-aware GINE** checkpoints from `<data.path>/model/`.
+4. Load **scalers** and **pair-aware GINE** checkpoints from `<data.path>/model/<study_name>/` (`optuna.study_name` in `config.yaml`).
 5. For each `events.csv` row: clone the base graph, resolve the event, set `fault_on`, append `dz_fault`, scale features, attach node/contingency tokens and event masks from the checkpoint vocabularies, run voltage and spower forward passes, decode to one class per target component.
 
 Decoding follows the checkpoint’s `selected_output` (`class`, `gated`, or `log_kpi`). The flag class is learned by the model — there is no deterministic post-hoc override from disconnection flags at inference time.

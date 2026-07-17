@@ -12,7 +12,7 @@ Thin entry point for **Spower** (generator) pair-aware GINE Optuna training.
 |----------|-------------|
 | `run_spower_training(...)` | Delegates to `pair_aware_training.run_task_training(task="spower", ...)` |
 
-Targets generator nodes via `gen_node_mask`. Deployment checkpoint: `data/model/spower_best_model.pt`.
+Targets generator nodes via `gen_node_mask`. Deployment checkpoint: `data/model/<study_name>/spower_best_model.pt`.
 
 ## Related modules
 

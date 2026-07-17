@@ -47,6 +47,17 @@ Forward output keys: `class_logits`, `inactive_logit`, `log_kpi_std`.
 | `gated` | Class-0 gate threshold, else argmax over active classes |
 | `log_kpi` | Invert standardized log-KPI and map through configured cuts (flag class still from class head) |
 
+## Training artifacts
+
+After evaluating the final best model on the test set, diagnostic figures are written to `data/training/<study_name>/<task>/plots/` by `modules/training_plots.py`:
+
+| File | Contents |
+|------|----------|
+| `loss_curve.png` | Train total loss per epoch (from the winning Optuna trial’s `optuna_trials/trial_N/history.csv`) |
+| `confusion_matrix.png` | Row-normalised confusion matrix on the test set |
+| `distance_histogram.png` | Histogram of signed prediction offsets (pred − true) |
+| `node_example_cls<N>_<UNDER|OVER>_ex<k>_of_5.png` | Up to 5 under- and 5 over-prediction examples |
+
 ## Notes
 
 Operating-point context is carried by electrical node/edge features and graph pooling; there is no separate OP-context encoder.

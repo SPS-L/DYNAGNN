@@ -76,6 +76,12 @@ dynamo.log
 *.sqlite3
 *.db-journal
 
+# Bundled AMS checkpoints under AMS/models/<network>/ (tracked; elsewhere still ignored)
+!AMS/models/
+!AMS/models/**
+!AMS/models/**/*.pt
+!AMS/models/**/*.pkl
+
 # --- DYNAGNN pipeline outputs (see modules/paths.py) -------------------------
 # These are written under data.path (config.yaml), often examples/*/data/ or
 # a project-local / external data folder.

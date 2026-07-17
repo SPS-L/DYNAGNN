@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Sustainable Power Systems Laboratory (https://sps-lab.org/)
-# Part of DYNAGNN: Nordic example smoke-test config writer
+# Part of DYNAGNN: Nordic example config writer
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 YAML_TEMPLATE = """# Configuration for DYNAGNN scripts.
 #
-# Quick smoke test defaults for the bundled Nordic example (examples/Nordic/data).
+# Nordic example defaults (examples/Nordic/data).
 # Before running main.py, set dynawo.path and data.path to absolute paths on your machine.
 
 dynagnn:
@@ -42,33 +42,34 @@ model:
   num_classes: 6
 
 training:
-  epochs: 30          # keep low for a quick smoke test
-  patience: 8
+  epochs: 150
+  patience: 20
   batch_size: 16
   split_mode: operating_point
   seed: 42
-  training: 0.8
+  training: 0.7
   validation: 0.1
-  testing: 0.1
-  
+  testing: 0.2
+
   # Fixed loss construction and output-decoding settings.
   pair_aware:
     classification_weight: 1.0
     regression_weight: 0.30
-    inactive_gate_weight: 0.20
-    ordinal_weight: 0.10
-    class_weight_mode: sqrt_inverse
+    inactive_gate_weight: 0.15
+    ordinal_weight: 0.15
+    class_weight_mode: inverse
     gate_pos_weight_mode: balanced
     gate_threshold: 0.50
     epsilon: 1.0e-10
-    selection_output: auto
+    selection_output: class
 
 optuna:
-  n_trials: 5
+  n_trials: 50
+  study_name: nordic_v1
   hparams:
     hidden_dim:
       type: categorical
-      choices: [64, 128, 256]
+      choices: [128, 256]
     node_id_dim:
       type: categorical
       choices: [16, 24, 32]
@@ -77,25 +78,25 @@ optuna:
       choices: [16, 32, 64]
     type_dim:
       type: categorical
-      choices: [4, 8, 16]
+      choices: [8, 16]
     pair_dim:
       type: categorical
-      choices: [16, 32, 64]
+      choices: [8, 16, 32]
     num_gnn_layers:
       type: int
-      low: 2
-      high: 4
+      low: 3
+      high: 5
     decoder_hidden_dim:
       type: categorical
       choices: [128, 256, 512]
     dropout:
       type: float
-      low: 0.05
-      high: 0.35
+      low: 0.02
+      high: 0.25
     lr:
       type: float
       low: 0.00001
-      high: 0.001
+      high: 0.0015
       log: true
     weight_decay:
       type: float
@@ -112,7 +113,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="Nordic_test_setup.py",
         description=(
-            "Write a ready-to-run Nordic smoke-test configuration into "
+            "Write a ready-to-run Nordic configuration into "
             "the project-root config.yaml."
         ),
     )

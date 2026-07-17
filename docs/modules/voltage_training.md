@@ -12,7 +12,7 @@ Thin entry point for **Voltage** (bus) pair-aware GINE Optuna training.
 |----------|-------------|
 | `run_voltage_training(...)` | Delegates to `pair_aware_training.run_task_training(task="voltage", ...)` |
 
-Targets bus nodes via `bus_node_mask`. Deployment checkpoint: `data/model/voltage_best_model.pt`.
+Targets bus nodes via `bus_node_mask`. Deployment checkpoint: `data/model/<study_name>/voltage_best_model.pt`.
 
 ## Related modules
 

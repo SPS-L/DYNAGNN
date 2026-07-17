@@ -579,8 +579,20 @@ def main() -> None:
         int(gen_mask_all.sum().item()),
     )
 
-    # 4) Load scalers and models
-    model_dir = DATA_DIR / "model"
+    # 4) Load scalers and models (same study folder as training)
+    optuna_cfg = cfg.get("optuna", {}) or {}
+    if "study_name" not in optuna_cfg or not str(optuna_cfg.get("study_name", "")).strip():
+        raise KeyError(
+            "Missing required config key: optuna.study_name "
+            "(models are loaded from data/model/<study_name>/)"
+        )
+    study_name = str(optuna_cfg["study_name"]).strip()
+    model_dir = DATA_DIR / "model" / study_name
+    if not model_dir.is_dir():
+        raise FileNotFoundError(
+            f"Model study folder not found: {model_dir}. "
+            "Train with this optuna.study_name or point config at an existing study."
+        )
 
     def _load_scalers():
         return (
@@ -613,7 +625,8 @@ def main() -> None:
         "load_models",
         _load_models,
         on_success=lambda _: [
-            f"voltage={v_weights.name}, spower={s_weights.name}, num_classes={num_classes}"
+            f"study={study_name}, voltage={v_weights.name}, "
+            f"spower={s_weights.name}, num_classes={num_classes}"
         ],
     )
 

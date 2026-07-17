@@ -18,6 +18,8 @@ from torch_geometric.loader import DataLoader
 from modules.pair_aware_gine import (
     PairAwareHParams,
     PairAwareLossWeights,
+    compute_class_weights,
+    compute_gate_pos_weight,
     evaluate_saved_pair_aware_model,
     run_pair_aware_training,
 )
@@ -529,38 +531,80 @@ def run_task_training(
     trials_root = task_dir / "optuna_trials"
     trials_root.mkdir(parents=True, exist_ok=True)
     storage = f"sqlite:///{(task_dir / f'optuna_{task}.sqlite3').as_posix()}"
-    study_name = f"pair_aware_{task}"
+    # Folder name comes from config (optuna.study_name); Optuna DB study is per-task inside it.
+    study_folder = Path(training_dir).name
+    study_name = f"{study_folder}__pair_aware_{task}"
+
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    )
+    class_weights = compute_class_weights(
+        train_loader, class_weight_mode, device, target_mask_attr, num_classes
+    )
+    inactive_pos_weight = compute_gate_pos_weight(
+        train_loader, gate_pos_weight_mode, device, target_mask_attr, num_classes
+    )
+
+    logger.info("========== %s Optuna study ==========", task.capitalize())
+    logger.info(
+        "study_name=%s | n_trials=%d | epochs=%d | patience=%d | device=%s | num_classes=%d",
+        study_folder,
+        n_trials,
+        epochs,
+        patience,
+        device,
+        num_classes,
+    )
+    logger.info("Loss weights: %s", asdict(loss_weights))
+    logger.info(
+        "Class weights: %s",
+        None
+        if class_weights is None
+        else [round(float(v), 4) for v in class_weights.detach().cpu().tolist()],
+    )
+    logger.info(
+        "Inactive gate pos_weight: %s",
+        None
+        if inactive_pos_weight is None
+        else [round(float(v), 4) for v in inactive_pos_weight.detach().cpu().tolist()],
+    )
+    logger.info("Artifacts: %s", task_dir)
+
+    # Keep Optuna's own INFO chatter out of dynagnn.log / stdout tee.
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     def objective(trial: optuna.Trial) -> float:
         hparams = _sample_hparams(trial, hparam_space)
-        logger.info("%s Optuna trial %d hparams=%s", task, trial.number, asdict(hparams))
         trial_root = trials_root / f"trial_{trial.number}"
-        result = run_pair_aware_training(
-            task=task,
-            target_mask_attr=target_mask_attr,
-            train_loader=train_loader,
-            validation_loader=val_loader,
-            test_loader=None,
-            output_dir=trial_root,
-            num_node_tokens=int(attachment["node_vocab_size"]),
-            num_contingency_tokens=int(attachment["contingency_vocab_size"]),
-            hparams=hparams,
-            loss_weights=loss_weights,
-            log_mean=log_mean,
-            log_std=log_std,
-            cuts=cuts_array,
-            epsilon=epsilon,
-            gate_threshold=gate_threshold,
-            epochs=epochs,
-            patience=patience,
-            fixed_epochs=None,
-            selection_output=selection_output_arg,
-            class_weight_mode=class_weight_mode,
-            gate_pos_weight_mode=gate_pos_weight_mode,
-            num_classes=num_classes,
-            logger=logger,
-            trial=trial,
-        )
+        try:
+            result = run_pair_aware_training(
+                task=task,
+                target_mask_attr=target_mask_attr,
+                train_loader=train_loader,
+                validation_loader=val_loader,
+                test_loader=None,
+                output_dir=trial_root,
+                num_node_tokens=int(attachment["node_vocab_size"]),
+                num_contingency_tokens=int(attachment["contingency_vocab_size"]),
+                hparams=hparams,
+                loss_weights=loss_weights,
+                log_mean=log_mean,
+                log_std=log_std,
+                cuts=cuts_array,
+                epsilon=epsilon,
+                gate_threshold=gate_threshold,
+                epochs=epochs,
+                patience=patience,
+                fixed_epochs=None,
+                selection_output=selection_output_arg,
+                class_weight_mode=class_weight_mode,
+                gate_pos_weight_mode=gate_pos_weight_mode,
+                num_classes=num_classes,
+                logger=logger,
+                trial=trial,
+            )
+        except optuna.TrialPruned:
+            raise
         score = result.get("best_validation_score")
         if score is None:
             raise RuntimeError(f"Optuna trial {trial.number} produced no validation score")
@@ -576,13 +620,6 @@ def run_task_training(
         study_name=study_name,
         storage=storage,
         load_if_exists=True,
-    )
-    logger.info(
-        "%s Optuna study: %s (storage=%s) n_trials=%d objective=max validation score",
-        task.capitalize(),
-        study_name,
-        storage,
-        n_trials,
     )
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
     if study.best_trial.value is None:
@@ -600,6 +637,21 @@ def run_task_training(
     selected_output = str(best_trial.user_attrs.get("selected_output", "class"))
     best_epoch = int(best_trial.user_attrs.get("best_epoch", 0))
 
+    logger.info(
+        "========== %s: best trial %d ==========",
+        task.capitalize(),
+        best_trial.number,
+    )
+    logger.info(
+        "best_val=%.4f | best_epoch=%d | decode=%s | hparams=%s",
+        float(best_trial.value),
+        best_epoch,
+        selected_output,
+        best_trial.params,
+    )
+    logger.info("Evaluating best %s checkpoint on the held-out test set...", task)
+
+    best_history_csv = state_path.parent / "history.csv"
     test_result = evaluate_saved_pair_aware_model(
         task=task,
         target_mask_attr=target_mask_attr,
@@ -621,6 +673,7 @@ def run_task_training(
         gate_pos_weight_mode=gate_pos_weight_mode,
         num_classes=num_classes,
         logger=logger,
+        history_csv=best_history_csv,
     )
 
     checkpoint_path = _save_deployment_checkpoint(

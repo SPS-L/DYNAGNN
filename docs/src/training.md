@@ -21,11 +21,11 @@ End-to-end **pair-aware GINE training**: build a shared PyG dataset (voltage + s
 
 | Path | Content |
 |------|---------|
-| `data/model/x_scaler.pkl`, `edge_attr_scaler.pkl` | Feature scalers (train-fit only) |
-| `data/model/voltage_best_model.pt`, `spower_best_model.pt` | Deployment checkpoints |
-| `data/model/voltage_best_hparams.json`, `spower_best_hparams.json` | Checkpoint metadata (hparams, vocabs, cuts, …) |
-| `data/model/training_summary.json` | Best-trial summary for both tasks |
-| `data/training/voltage/`, `data/training/spower/` | Optuna SQLite/CSV, trial folders, test evaluation artifacts |
+| `data/model/<study_name>/x_scaler.pkl`, `edge_attr_scaler.pkl` | Feature scalers (train-fit only) |
+| `data/model/<study_name>/voltage_best_model.pt`, `spower_best_model.pt` | Deployment checkpoints |
+| `data/model/<study_name>/voltage_best_hparams.json`, `spower_best_hparams.json` | Checkpoint metadata (hparams, vocabs, cuts, …) |
+| `data/model/<study_name>/training_summary.json` | Best-trial summary for both tasks |
+| `data/training/<study_name>/voltage/`, `…/<study_name>/spower/` | Optuna SQLite/CSV, trial folders, test outputs, and `plots/` (`optuna.study_name`) |
 
 ## Main entry point
 
@@ -83,7 +83,7 @@ Tunable capacity and optimizer settings only:
 
 `hidden_dim`, `node_id_dim`, `contingency_id_dim`, `type_dim`, `pair_dim`, `num_gnn_layers`, `decoder_hidden_dim`, `dropout`, `lr`, `weight_decay`.
 
-Voltage and Spower each get an independent study (`pair_aware_voltage`, `pair_aware_spower`).
+Voltage and Spower each get an independent Optuna study named `<study_name>__pair_aware_<task>` (e.g. `nordic_v1__pair_aware_voltage`). Artifacts are stored under `data/training/<study_name>/<task>/` and `data/model/<study_name>/`.
 
 ## Event lookup and `fault_on` placement
 

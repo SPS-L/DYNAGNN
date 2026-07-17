@@ -195,7 +195,7 @@ A residual GINE stack with jumping knowledge feeds a shared decoder that produce
 2. an **inactive (class-0) gate**;
 3. an auxiliary **log-KPI** regression head (supervised where a finite KPI exists).
 
-The flag class is **learned** — there is no deterministic post-hoc override from disconnection flags at evaluation/inference. Structural disconnection masks are retained for target construction and audit only. No historical KPI/class prior is used.
+The flag class is **learned** — there is no deterministic post-hoc override from disconnection flags at evaluation/inference. No structural disconnection masks are used. No historical KPI/class prior is used.
 
 A separate operating-point context encoder is **not** used (`op_context_embedding_dim` is not an Optuna parameter). OP information remains available through node/edge electrical features and graph mean/max pooling.
 
@@ -209,16 +209,18 @@ Pipeline entry points are unchanged: `main.py` → `src/training.py` → `module
 
 ### Nordic example
 
-Operating point **10** was removed from the bundled Nordic example (folder and docs). The example now ships **nine** operating points (`operating_point_1` … `operating_point_9`). The smoke-test config uses four KPI cuts → `num_classes: 6`.
+Operating point **10** was removed from the bundled Nordic example (folder and docs). The example now ships **nine** operating points (`operating_point_1` … `operating_point_9`). The Nordic config from `Nordic_test_setup.py` uses four KPI cuts → `num_classes: 6`. Set required `optuna.study_name` so checkpoints land under `data/model/<study_name>/`.
 
 ### Artifacts (v1.2)
 
 | Path | Role |
 |------|------|
-| `data/model/voltage_best_model.pt`, `spower_best_model.pt` | Deployment checkpoints (vocabularies, cuts, selected decode path, weights) |
-| `data/model/voltage_best_hparams.json`, `spower_best_hparams.json` | Checkpoint metadata without weights |
-| `data/model/x_scaler.pkl`, `edge_attr_scaler.pkl` | Train-fit feature scalers |
-| `data/training/<task>/optuna_*.sqlite3`, `optuna_trials.csv` | Per-task Optuna studies |
+| `data/model/<study_name>/voltage_best_model.pt`, `spower_best_model.pt` | Deployment checkpoints (vocabularies, cuts, selected decode path, weights) |
+| `data/model/<study_name>/voltage_best_hparams.json`, `spower_best_hparams.json` | Checkpoint metadata without weights |
+| `data/model/<study_name>/x_scaler.pkl`, `edge_attr_scaler.pkl` | Train-fit feature scalers |
+| `data/training/<study_name>/<task>/optuna_*.sqlite3`, `optuna_trials.csv` | Per-task Optuna studies (`optuna.study_name`) |
+| `data/training/<study_name>/<task>/optuna_trials/trial_N/` | Per-trial history and weights |
+| `data/training/<study_name>/<task>/plots/` | Test diagnostic figures (loss curve, confusion matrix, …) |
 
 **Removed from the active stack:** GAT-CORAL training/decoding modules, `gat_*_best_model.pt` naming, CORAL Optuna knobs (`under_penalty_lambda`, `coral_prediction_threshold`, …), and high-class selection weights (`high_class_threshold`, `selection_f1_weight`, `selection_loss_weight`).
 
@@ -259,7 +261,7 @@ In all versions, flag cells receive class $K+1$.
 
 **v1.1 → v1.11:** Replace activity fractions in `kpi.class_bins.*.cuts` with **raw KPI thresholds** (strictly increasing positive values). Set `dynagnn.version` to `1.11` and `model.num_classes` to `len(cuts) + 2`. Re-run from `dataset` (or the full pipeline). Remove obsolete `normalization/` and `Dataset/KPI_visualization/` folders if present.
 
-**v1.11 → v1.2:** Keep `kpi.class_bins.*.cuts` and set `model.num_classes` to `len(cuts) + 2`. Replace GAT/CORAL training keys with `training.pair_aware` and the pair-aware `optuna.hparams` list. Set `dynagnn.version` to `1.2`. Retrain from `training` (or full pipeline). Load new checkpoints `voltage_best_model.pt` / `spower_best_model.pt` — old `gat_*` weights are not compatible. Inference CLI and prediction CSV layout are unchanged.
+**v1.11 → v1.2:** Keep `kpi.class_bins.*.cuts` and set `model.num_classes` to `len(cuts) + 2`. Replace GAT/CORAL training keys with `training.pair_aware` and the pair-aware `optuna.hparams` list. Set required `optuna.study_name` (checkpoints and scalers live under `data/model/<study_name>/`). Set `dynagnn.version` to `1.2`. Retrain from `training` (or full pipeline). Load new checkpoints `voltage_best_model.pt` / `spower_best_model.pt` — old `gat_*` weights are not compatible. Inference CLI and prediction CSV layout are unchanged.
 
 ---
 

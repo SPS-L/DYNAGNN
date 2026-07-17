@@ -19,13 +19,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from modules.dynawo_runner import write_simulation_log_header
-from modules.paths import CONFIG_PATH, DATA_DIR
+from modules.paths import CONFIG_PATH, DATA_DIR, load_config
 from modules.pipeline_logging import configure_pipeline_logging, get_logger, get_pipeline_log_path
 from src import build_op_assets, curves_post_process, dataset_construction, simulate, training
-
-MODEL_DIR = DATA_DIR / "model"
-VOLTAGE_MODEL = MODEL_DIR / "voltage_best_model.pt"
-SPOWER_MODEL = MODEL_DIR / "spower_best_model.pt"
 
 PIPELINE_STEPS: tuple[tuple[str, Callable[[], None]], ...] = (
     ("simulate", simulate.main),
@@ -100,6 +96,17 @@ def main() -> None:
     write_simulation_log_header(get_pipeline_log_path(), _dynagnn_version())
     logger = get_logger()
 
+    cfg = load_config()
+    study_name = str((cfg.get("optuna", {}) or {}).get("study_name", "")).strip()
+    if not study_name:
+        raise SystemExit(
+            "Missing required config key: optuna.study_name "
+            "(models are written under data/model/<study_name>/)."
+        )
+    model_dir = DATA_DIR / "model" / study_name
+    voltage_model = model_dir / "voltage_best_model.pt"
+    spower_model = model_dir / "spower_best_model.pt"
+
     logger.info("DYNAGNN pipeline started.")
     if start_index > 0:
         skipped = ", ".join(name for name, _ in PIPELINE_STEPS[:start_index])
@@ -107,7 +114,7 @@ def main() -> None:
     if args.to_step is not None:
         logger.info("Stopping after step %s.", args.to_step)
     if end_index == STEP_INDEX["training"]:
-        logger.info("Expected outputs when complete: %s, %s", VOLTAGE_MODEL, SPOWER_MODEL)
+        logger.info("Expected outputs when complete: %s, %s", voltage_model, spower_model)
 
     for step_name, step in PIPELINE_STEPS[start_index : end_index + 1]:
         step()
@@ -116,17 +123,17 @@ def main() -> None:
         logger.info("DYNAGNN pipeline stopped after %s.", PIPELINE_STEPS[end_index][0])
         return
 
-    if not VOLTAGE_MODEL.is_file() or not SPOWER_MODEL.is_file():
+    if not voltage_model.is_file() or not spower_model.is_file():
         raise SystemExit(
             f"Pipeline finished but trained models are missing. Expected:\n"
-            f"  {VOLTAGE_MODEL}\n"
-            f"  {SPOWER_MODEL}\n"
+            f"  {voltage_model}\n"
+            f"  {spower_model}\n"
             f"See log: {get_pipeline_log_path()}"
         )
 
     logger.info("DYNAGNN pipeline completed successfully.")
-    logger.info("Trained models: %s", VOLTAGE_MODEL)
-    logger.info("Trained models: %s", SPOWER_MODEL)
+    logger.info("Trained models: %s", voltage_model)
+    logger.info("Trained models: %s", spower_model)
 
 
 if __name__ == "__main__":
