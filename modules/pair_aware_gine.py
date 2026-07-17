@@ -8,12 +8,11 @@ features, explicit target-component identity, contingency identity/location,
 and optional operating-point context.
 
 The classification head learns all configured classes directly:
-- KPI-derived activity levels;
-- flag class: disconnected or controlled component.
+- KPI-derived activity levels (classes 0 .. num_classes-2);
+- flag class (class num_classes-1): disconnected or controlled component.
 
-The flag class is never overwritten deterministically during evaluation. The
-structural disconnection mask is retained only for target construction and
-audit. No historical KPI/class prior is used.
+The flag class is never overwritten deterministically during evaluation.
+No historical KPI/class prior is used.
 """
 from __future__ import annotations
 
@@ -31,9 +30,10 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch_geometric.nn import GINEConv
 
-ACTIVITY_CLASSES = 5
-NUM_CLASSES = 6
-DISCONNECTED_CLASS = 5
+
+def flag_class_index(num_classes: int) -> int:
+    """Return the index of the flag (disconnected/controlled) class."""
+    return int(num_classes) - 1
 
 
 @dataclass(frozen=True)
@@ -98,6 +98,10 @@ class PairAwareGINE(nn.Module):
     This is intentionally close to the strongest pair-aware residual encoder,
     but removes every historical KPI prior. The output heads predict from the
     graph representation itself.
+
+    ``num_classes`` is the total number of output classes including the flag
+    class. Classes ``0 .. num_classes-2`` are KPI-derived activity levels;
+    class ``num_classes-1`` is the flag (disconnected/controlled) class.
     """
 
     def __init__(
@@ -107,6 +111,7 @@ class PairAwareGINE(nn.Module):
         num_contingency_tokens: int,
         target_mask_attr: str,
         hparams: PairAwareHParams,
+        num_classes: int,
         num_node_types: int = 3,
         num_edge_types: int = 3,
     ) -> None:
@@ -114,6 +119,7 @@ class PairAwareGINE(nn.Module):
         h = int(hparams.hidden_dim)
         self.hparams = hparams
         self.target_mask_attr = str(target_mask_attr)
+        self.num_classes = int(num_classes)
 
         self.node_type_embedding = nn.Embedding(num_node_types, hparams.type_dim)
         self.edge_type_embedding = nn.Embedding(num_edge_types, hparams.type_dim)
@@ -172,7 +178,7 @@ class PairAwareGINE(nn.Module):
             nn.ReLU(),
             nn.Dropout(hparams.dropout),
         )
-        self.class_head = nn.Linear(hparams.decoder_hidden_dim, NUM_CLASSES)
+        self.class_head = nn.Linear(hparams.decoder_hidden_dim, self.num_classes)
         self.inactive_head = nn.Linear(hparams.decoder_hidden_dim, 1)
         self.regression_head = nn.Linear(hparams.decoder_hidden_dim, 1)
 
@@ -282,10 +288,10 @@ def _safe_div(numerator: float | int, denominator: float | int) -> float:
 def classification_metrics(y_true: np.ndarray, y_pred: np.ndarray, num_classes: int) -> dict:
     """Compute square confusion-matrix metrics and exact ordinal offsets.
 
-    ``num_classes`` is six for the learned class-0..5 task. It may also be six
-    for the activity-only subset (true classes 0..4), which correctly counts a
-    predicted class 5 as an error while excluding absent true classes from the
-    balanced/macro averages.
+    ``num_classes`` is the total number of output classes (KPI activity classes
+    plus the flag class). It may also be used for an activity-only subset, which
+    correctly counts a predicted flag class as an error while excluding absent
+    true classes from balanced/macro averages.
     """
     y_true = np.asarray(y_true, dtype=np.int64)
     y_pred = np.asarray(y_pred, dtype=np.int64)
@@ -378,10 +384,10 @@ def selection_score(metrics: dict) -> float:
     )
 
 
-def _ordinal_cdf_loss(logits: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+def _ordinal_cdf_loss(logits: torch.Tensor, y: torch.Tensor, num_classes: int) -> torch.Tensor:
     probabilities = torch.softmax(logits, dim=1)
     pred_cdf = probabilities.cumsum(dim=1)[:, :-1]
-    true_cdf = F.one_hot(y, num_classes=NUM_CLASSES).float().cumsum(dim=1)[:, :-1]
+    true_cdf = F.one_hot(y, num_classes=int(num_classes)).float().cumsum(dim=1)[:, :-1]
     return torch.abs(pred_cdf - true_cdf).mean()
 
 
@@ -413,7 +419,6 @@ def _move_batch(data, device: torch.device):
         "event_edge_mask",
         "event_graph_type",
         "y_log_kpi_std",
-        "structural_class5_mask",
     ]
     keys = [key for key in tensor_keys if hasattr(data, key)]
     return data.to(device, *keys)
@@ -456,6 +461,7 @@ def _run_epoch(
     epsilon: float,
     gate_threshold: float,
     target_mask_attr: str,
+    num_classes: int,
     collect_predictions: bool = False,
 ) -> dict:
     train_mode = optimizer is not None
@@ -464,10 +470,12 @@ def _run_epoch(
     sums = {"total": 0.0, "classification": 0.0, "regression": 0.0, "gate": 0.0, "ordinal": 0.0}
     n_supervised = 0
 
-    six_true_chunks: list[np.ndarray] = []
-    six_class_chunks: list[np.ndarray] = []
-    six_gated_chunks: list[np.ndarray] = []
-    six_log_chunks: list[np.ndarray] = []
+    flag_cls = flag_class_index(num_classes)
+
+    full_true_chunks: list[np.ndarray] = []
+    full_class_chunks: list[np.ndarray] = []
+    full_gated_chunks: list[np.ndarray] = []
+    full_log_chunks: list[np.ndarray] = []
     activity_true_chunks: list[np.ndarray] = []
     activity_class_chunks: list[np.ndarray] = []
     activity_gated_chunks: list[np.ndarray] = []
@@ -481,9 +489,8 @@ def _run_epoch(
             target_mask = getattr(data, target_mask_attr).bool()
             y_all = data.y_class[target_mask].long()
             log_target_all = data.y_log_kpi_std[target_mask]
-            structural_all = data.structural_class5_mask[target_mask].bool()
 
-            valid_mask = (y_all >= 0) & (y_all < NUM_CLASSES)
+            valid_mask = (y_all >= 0) & (y_all < num_classes)
             if not bool(valid_mask.any()):
                 continue
 
@@ -493,16 +500,15 @@ def _run_epoch(
             y = y_all[valid_mask]
             log_target = log_target_all[valid_mask]
 
-            # All six labels, including structural class 5, supervise the classifier.
             classification_loss = F.cross_entropy(logits, y, weight=class_weights)
             gate_target = (y == 0).float()
             gate_loss = F.binary_cross_entropy_with_logits(
                 gate_logit, gate_target, pos_weight=inactive_pos_weight
             )
-            ordinal_loss = _ordinal_cdf_loss(logits, y)
+            ordinal_loss = _ordinal_cdf_loss(logits, y, num_classes)
 
-            # Class 5 has no KPI target by design, so regression is learned only where
-            # a finite KPI exists (normally classes 0..4).
+            # The flag class has no KPI target by design; regression is learned only
+            # where a finite KPI exists (normally activity classes 0..num_classes-2).
             finite_reg = torch.isfinite(log_target)
             regression_loss = (
                 F.smooth_l1_loss(reg_prediction[finite_reg], log_target[finite_reg])
@@ -540,20 +546,20 @@ def _run_epoch(
                 cuts=cuts,
                 epsilon=epsilon,
             )
-            # The regression branch can only discretize KPI classes 0..4. For its
-            # class-5 decision, use the learned six-class classifier rather than a
-            # deterministic structural override.
+            # The regression branch can only discretize KPI activity classes. For the
+            # flag-class decision, defer to the learned classifier rather than any
+            # deterministic override.
             class_pred_np = class_pred.cpu().numpy()
-            log_pred_np[class_pred_np == DISCONNECTED_CLASS] = DISCONNECTED_CLASS
+            log_pred_np[class_pred_np == flag_cls] = flag_cls
 
             y_np = y.detach().cpu().numpy()
             gated_pred_np = gated_pred.cpu().numpy()
-            six_true_chunks.append(y_np)
-            six_class_chunks.append(class_pred_np)
-            six_gated_chunks.append(gated_pred_np)
-            six_log_chunks.append(log_pred_np)
+            full_true_chunks.append(y_np)
+            full_class_chunks.append(class_pred_np)
+            full_gated_chunks.append(gated_pred_np)
+            full_log_chunks.append(log_pred_np)
 
-            activity_np = y_np < DISCONNECTED_CLASS
+            activity_np = y_np < flag_cls
             if bool(activity_np.any()):
                 activity_true_chunks.append(y_np[activity_np])
                 activity_class_chunks.append(class_pred_np[activity_np])
@@ -566,7 +572,6 @@ def _run_epoch(
                 events = _string_list(getattr(data, "event_id", ""), num_graphs)
                 target_graph_all = data.batch[target_mask].detach().cpu().numpy()
                 target_token_all = data.node_token[target_mask].detach().cpu().numpy()
-                structural_np_all = structural_all.detach().cpu().numpy()
                 valid_indices = np.flatnonzero(valid_mask.detach().cpu().numpy())
                 probabilities = torch.softmax(detached_logits, dim=1).cpu().numpy()
 
@@ -581,7 +586,6 @@ def _run_epoch(
                         "contingency": events[graph_idx],
                         "node_token": int(target_token_all[target_idx]),
                         "true_class": true_class,
-                        "structural_class5_target": bool(structural_np_all[target_idx]),
                         "class_prediction": class_value,
                         "gated_prediction": gated_value,
                         "log_kpi_prediction": log_value,
@@ -589,55 +593,66 @@ def _run_epoch(
                         "gated_error_offset": gated_value - true_class,
                         "log_kpi_error_offset": log_value - true_class,
                     }
-                    for cls in range(NUM_CLASSES):
+                    for cls in range(num_classes):
                         row[f"class_probability_{cls}"] = float(probabilities[local_idx, cls])
                     prediction_rows.append(row)
 
     def _cat(chunks: list[np.ndarray]) -> np.ndarray:
         return np.concatenate(chunks) if chunks else np.empty((0,), dtype=np.int64)
 
-    six_true = _cat(six_true_chunks)
+    full_true = _cat(full_true_chunks)
     activity_true = _cat(activity_true_chunks)
     result = {
         "loss": {key: _safe_div(value, n_supervised) for key, value in sums.items()},
-        "six_class_class": classification_metrics(six_true, _cat(six_class_chunks), NUM_CLASSES),
-        "six_class_gated": classification_metrics(six_true, _cat(six_gated_chunks), NUM_CLASSES),
-        "six_class_log_kpi": classification_metrics(six_true, _cat(six_log_chunks), NUM_CLASSES),
-        # Secondary 0..4 view. Prediction 5 remains an error rather than being hidden.
-        "activity_class": classification_metrics(activity_true, _cat(activity_class_chunks), NUM_CLASSES),
-        "activity_gated": classification_metrics(activity_true, _cat(activity_gated_chunks), NUM_CLASSES),
-        "activity_log_kpi": classification_metrics(activity_true, _cat(activity_log_chunks), NUM_CLASSES),
+        "full_class_class": classification_metrics(full_true, _cat(full_class_chunks), num_classes),
+        "full_class_gated": classification_metrics(full_true, _cat(full_gated_chunks), num_classes),
+        "full_class_log_kpi": classification_metrics(full_true, _cat(full_log_chunks), num_classes),
+        # Secondary activity-only view. Prediction of flag class remains an error.
+        "activity_class": classification_metrics(activity_true, _cat(activity_class_chunks), num_classes),
+        "activity_gated": classification_metrics(activity_true, _cat(activity_gated_chunks), num_classes),
+        "activity_log_kpi": classification_metrics(activity_true, _cat(activity_log_chunks), num_classes),
     }
-    # Backward-compatible aliases; these are learned six-class metrics, not a
-    # deterministic class-5 override.
-    result["combined_class"] = result["six_class_class"]
-    result["combined_gated"] = result["six_class_gated"]
-    result["combined_log_kpi"] = result["six_class_log_kpi"]
+    # Backward-compatible aliases; these are learned full-class metrics.
+    result["combined_class"] = result["full_class_class"]
+    result["combined_gated"] = result["full_class_gated"]
+    result["combined_log_kpi"] = result["full_class_log_kpi"]
     if collect_predictions:
         result["predictions"] = prediction_rows
     return result
 
-def compute_class_weights(loader, mode: str, device: torch.device, target_mask_attr: str) -> Optional[torch.Tensor]:
+def compute_class_weights(
+    loader,
+    mode: str,
+    device: torch.device,
+    target_mask_attr: str,
+    num_classes: int,
+) -> Optional[torch.Tensor]:
     if mode == "none":
         return None
-    counts = torch.zeros(NUM_CLASSES, dtype=torch.float64)
+    counts = torch.zeros(num_classes, dtype=torch.float64)
     for data in loader:
         y = data.y_class[getattr(data, target_mask_attr)]
-        y = y[(y >= 0) & (y < NUM_CLASSES)]
-        counts += torch.bincount(y, minlength=NUM_CLASSES).double()
+        y = y[(y >= 0) & (y < num_classes)]
+        counts += torch.bincount(y, minlength=num_classes).double()
     weights = torch.sqrt(counts.sum() / counts.clamp_min(1.0))
     weights = weights / weights.mean()
     return weights.float().to(device)
 
 
-def compute_gate_pos_weight(loader, mode: str, device: torch.device, target_mask_attr: str) -> Optional[torch.Tensor]:
+def compute_gate_pos_weight(
+    loader,
+    mode: str,
+    device: torch.device,
+    target_mask_attr: str,
+    num_classes: int,
+) -> Optional[torch.Tensor]:
     if mode == "none":
         return None
     inactive = 0
     active = 0
     for data in loader:
         y = data.y_class[getattr(data, target_mask_attr)]
-        y = y[(y >= 0) & (y < NUM_CLASSES)]
+        y = y[(y >= 0) & (y < num_classes)]
         inactive += int((y == 0).sum().item())
         active += int((y != 0).sum().item())
     return torch.tensor([_safe_div(active, max(inactive, 1))], dtype=torch.float32, device=device)
@@ -712,35 +727,35 @@ def _under_over_by_true_class(y_true: np.ndarray, y_pred: np.ndarray, num_classe
     return pd.DataFrame(rows)
 
 
-def _save_test_outputs(output_dir: Path, result: dict, selected_output: str) -> None:
+def _save_test_outputs(output_dir: Path, result: dict, selected_output: str, num_classes: int) -> None:
     test_dir = output_dir / "test_outputs"
     test_dir.mkdir(parents=True, exist_ok=True)
     predictions = pd.DataFrame(result.get("predictions", []))
     predictions.to_csv(test_dir / "test_predictions.csv", index=False)
 
-    six_key = f"six_class_{selected_output}"
+    full_key = f"full_class_{selected_output}"
     activity_key = f"activity_{selected_output}"
-    six = result[six_key]
+    full = result[full_key]
     activity = result[activity_key]
     (test_dir / "test_metrics.json").write_text(
         json.dumps(
             {
                 "selected_output": selected_output,
-                "six_class_learned_0_to_5": six,
-                "activity_subset_true_0_to_4": activity,
+                "full_class": full,
+                "activity_subset": activity,
             },
             indent=2,
         ),
         encoding="utf-8",
     )
-    _metrics_frame(six).to_csv(test_dir / "test_per_class_metrics_0_to_5.csv", index=False)
+    _metrics_frame(full).to_csv(test_dir / "test_per_class_metrics.csv", index=False)
     _metrics_frame(activity).to_csv(
         test_dir / "test_activity_subset_per_class_metrics.csv", index=False
     )
-    pd.DataFrame(six["confusion_matrix"]).to_csv(
-        test_dir / "test_confusion_matrix_0_to_5.csv", index=False
+    pd.DataFrame(full["confusion_matrix"]).to_csv(
+        test_dir / "test_confusion_matrix.csv", index=False
     )
-    _error_offset_frame(six).to_csv(
+    _error_offset_frame(full).to_csv(
         test_dir / "test_error_offset_distribution.csv", index=False
     )
 
@@ -758,39 +773,40 @@ def _save_test_outputs(output_dir: Path, result: dict, selected_output: str) -> 
 
         y_true = predictions["true_class"].to_numpy(dtype=np.int64)
         y_pred = predictions["selected_prediction"].to_numpy(dtype=np.int64)
-        _under_over_by_true_class(y_true, y_pred, NUM_CLASSES).to_csv(
-            test_dir / "test_under_over_by_true_class_0_to_5.csv", index=False
+        _under_over_by_true_class(y_true, y_pred, num_classes).to_csv(
+            test_dir / "test_under_over_by_true_class.csv", index=False
         )
-        _error_offset_by_true_class(y_true, y_pred, NUM_CLASSES).to_csv(
+        _error_offset_by_true_class(y_true, y_pred, num_classes).to_csv(
             test_dir / "test_error_offset_by_true_class.csv", index=False
         )
         pd.DataFrame(
             [
                 {
-                    "exact": six["correct"],
-                    "total": six["total"],
-                    "under_count": six["under_count"],
-                    "under_rate": six["under_rate"],
-                    "over_count": six["over_count"],
-                    "over_rate": six["over_rate"],
-                    "under_gt1_count": six["under_gt1_count"],
-                    "under_gt1_rate": six["under_gt1_rate"],
-                    "over_gt1_count": six["over_gt1_count"],
-                    "over_gt1_rate": six["over_gt1_rate"],
-                    "within_one_accuracy": six["within_one_accuracy"],
-                    "mae": six["mae"],
-                    "rmse": six["rmse"],
-                    "mean_signed_error": six["mean_signed_error"],
+                    "exact": full["correct"],
+                    "total": full["total"],
+                    "under_count": full["under_count"],
+                    "under_rate": full["under_rate"],
+                    "over_count": full["over_count"],
+                    "over_rate": full["over_rate"],
+                    "under_gt1_count": full["under_gt1_count"],
+                    "under_gt1_rate": full["under_gt1_rate"],
+                    "over_gt1_count": full["over_gt1_count"],
+                    "over_gt1_rate": full["over_gt1_rate"],
+                    "within_one_accuracy": full["within_one_accuracy"],
+                    "mae": full["mae"],
+                    "rmse": full["rmse"],
+                    "mean_signed_error": full["mean_signed_error"],
                 }
             ]
-        ).to_csv(test_dir / "test_under_over_summary_0_to_5.csv", index=False)
+        ).to_csv(test_dir / "test_under_over_summary.csv", index=False)
 
 
 def _log_test_breakdown(
     logger: logging.Logger, metrics: dict, *, selected_output: str
 ) -> None:
+    num_classes = len(metrics["class_support"])
     logger.info(
-        "TEST learned six-class selected=%s — %d/%d acc=%.4f bal=%.4f macroF1=%.4f MAE=%.4f",
+        "TEST full-class selected=%s — %d/%d acc=%.4f bal=%.4f macroF1=%.4f MAE=%.4f",
         selected_output,
         metrics["correct"],
         metrics["total"],
@@ -800,7 +816,7 @@ def _log_test_breakdown(
         metrics["mae"],
     )
     logger.info("TEST per-class accuracy (correct/support; recall):")
-    for cls in range(NUM_CLASSES):
+    for cls in range(num_classes):
         support = int(metrics["class_support"][cls])
         correct = int(metrics["class_correct"][cls])
         accuracy = float(metrics["class_accuracy"][cls])
@@ -816,7 +832,7 @@ def _log_test_breakdown(
             f1,
         )
     logger.info("TEST exact ordinal error offsets (prediction - true):")
-    for offset in range(-(NUM_CLASSES - 1), NUM_CLASSES):
+    for offset in range(-(num_classes - 1), num_classes):
         key = str(offset)
         label = f"{offset:+d}" if offset != 0 else "0 (exact)"
         logger.info(
@@ -850,6 +866,7 @@ def run_pair_aware_training(
     selection_output: Optional[str],
     class_weight_mode: str,
     gate_pos_weight_mode: str,
+    num_classes: int,
     logger: logging.Logger,
     trial=None,
 ) -> dict:
@@ -861,15 +878,17 @@ def run_pair_aware_training(
         num_contingency_tokens=num_contingency_tokens,
         target_mask_attr=target_mask_attr,
         hparams=hparams,
+        num_classes=num_classes,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=hparams.lr, weight_decay=hparams.weight_decay)
     scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=4, min_lr=1.0e-6)
-    class_weights = compute_class_weights(train_loader, class_weight_mode, device, target_mask_attr)
-    inactive_pos_weight = compute_gate_pos_weight(train_loader, gate_pos_weight_mode, device, target_mask_attr)
+    class_weights = compute_class_weights(train_loader, class_weight_mode, device, target_mask_attr, num_classes)
+    inactive_pos_weight = compute_gate_pos_weight(train_loader, gate_pos_weight_mode, device, target_mask_attr, num_classes)
 
     logger.info("Pair-aware direct GNN device: %s", device)
     logger.info("HParams: %s", asdict(hparams))
     logger.info("Loss weights: %s", asdict(loss_weights))
+    logger.info("num_classes: %d", num_classes)
     logger.info("Class weights: %s", None if class_weights is None else class_weights.detach().cpu().tolist())
     logger.info("Inactive pos weight: %s", None if inactive_pos_weight is None else inactive_pos_weight.detach().cpu().tolist())
 
@@ -896,6 +915,7 @@ def run_pair_aware_training(
             epsilon=epsilon,
             gate_threshold=gate_threshold,
             target_mask_attr=target_mask_attr,
+            num_classes=num_classes,
         )
         row = {"epoch": epoch, **{f"train_{k}_loss": v for k, v in train_result["loss"].items()}}
 
@@ -914,11 +934,12 @@ def run_pair_aware_training(
                 epsilon=epsilon,
                 gate_threshold=gate_threshold,
                 target_mask_attr=target_mask_attr,
+                num_classes=num_classes,
             )
             candidates = {
-                "class": val_result["six_class_class"]["selection_score"],
-                "gated": val_result["six_class_gated"]["selection_score"],
-                "log_kpi": val_result["six_class_log_kpi"]["selection_score"],
+                "class": val_result["full_class_class"]["selection_score"],
+                "gated": val_result["full_class_gated"]["selection_score"],
+                "log_kpi": val_result["full_class_log_kpi"]["selection_score"],
             }
             selected = selection_output or max(candidates, key=candidates.get)
             if selected not in candidates:
@@ -965,9 +986,9 @@ def run_pair_aware_training(
                 epoch,
                 total_epochs,
                 train_result["loss"]["total"],
-                train_result["six_class_class"]["accuracy"],
-                train_result["six_class_gated"]["accuracy"],
-                train_result["six_class_log_kpi"]["accuracy"],
+                train_result["full_class_class"]["accuracy"],
+                train_result["full_class_gated"]["accuracy"],
+                train_result["full_class_log_kpi"]["accuracy"],
             )
         history.append(row)
 
@@ -994,8 +1015,8 @@ def run_pair_aware_training(
                 "log_std": log_std,
                 "task": task,
                 "target_mask_attr": target_mask_attr,
-                "num_classes": NUM_CLASSES,
-                "class5_handling": "learned direct prediction; no deterministic override",
+                "num_classes": num_classes,
+                "flag_class_handling": "learned direct prediction; no deterministic override",
                 "cuts": cuts.tolist(),
                 "epsilon": epsilon,
                 "gate_threshold": gate_threshold,
@@ -1027,15 +1048,15 @@ def run_pair_aware_training(
             epsilon=epsilon,
             gate_threshold=gate_threshold,
             target_mask_attr=target_mask_attr,
+            num_classes=num_classes,
             collect_predictions=True,
         )
         result["test"] = test_result
-        result["selected_test_six_class"] = test_result[f"six_class_{best_output}"]
+        result["selected_test_full_class"] = test_result[f"full_class_{best_output}"]
         result["selected_test_activity"] = test_result[f"activity_{best_output}"]
-        # Backward-compatible name; this is the learned six-class result.
-        result["selected_test_combined"] = result["selected_test_six_class"]
-        _save_test_outputs(training_dir, test_result, best_output)
-        _log_test_breakdown(logger, result["selected_test_six_class"], selected_output=best_output)
+        result["selected_test_combined"] = result["selected_test_full_class"]
+        _save_test_outputs(training_dir, test_result, best_output, num_classes)
+        _log_test_breakdown(logger, result["selected_test_full_class"], selected_output=best_output)
     return result
 
 
@@ -1059,6 +1080,7 @@ def evaluate_saved_pair_aware_model(
     selected_output: str,
     class_weight_mode: str,
     gate_pos_weight_mode: str,
+    num_classes: int,
     logger: logging.Logger,
 ) -> dict:
     """Load a saved state, evaluate it on test data, and export test metrics."""
@@ -1070,15 +1092,16 @@ def evaluate_saved_pair_aware_model(
         num_contingency_tokens=num_contingency_tokens,
         target_mask_attr=target_mask_attr,
         hparams=hparams,
+        num_classes=num_classes,
     ).to(device)
     model.load_state_dict(state_dict)
     model.eval()
 
     class_weights = compute_class_weights(
-        train_loader, class_weight_mode, device, target_mask_attr
+        train_loader, class_weight_mode, device, target_mask_attr, num_classes
     )
     inactive_pos_weight = compute_gate_pos_weight(
-        train_loader, gate_pos_weight_mode, device, target_mask_attr
+        train_loader, gate_pos_weight_mode, device, target_mask_attr, num_classes
     )
     test_result = _run_epoch(
         model=model,
@@ -1094,18 +1117,19 @@ def evaluate_saved_pair_aware_model(
         epsilon=epsilon,
         gate_threshold=gate_threshold,
         target_mask_attr=target_mask_attr,
+        num_classes=num_classes,
         collect_predictions=True,
     )
     task_dir = Path(output_dir) / task
     task_dir.mkdir(parents=True, exist_ok=True)
-    _save_test_outputs(task_dir, test_result, selected_output)
-    selected_metrics = test_result[f"six_class_{selected_output}"]
+    _save_test_outputs(task_dir, test_result, selected_output, num_classes)
+    selected_metrics = test_result[f"full_class_{selected_output}"]
     _log_test_breakdown(logger, selected_metrics, selected_output=selected_output)
     return {
         "loss": test_result["loss"],
-        "six_class_class": test_result["six_class_class"],
-        "six_class_gated": test_result["six_class_gated"],
-        "six_class_log_kpi": test_result["six_class_log_kpi"],
-        "selected_test_six_class": selected_metrics,
+        "full_class_class": test_result["full_class_class"],
+        "full_class_gated": test_result["full_class_gated"],
+        "full_class_log_kpi": test_result["full_class_log_kpi"],
+        "selected_test_full_class": selected_metrics,
         "selected_test_activity": test_result[f"activity_{selected_output}"],
     }

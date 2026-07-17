@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Sustainable Power Systems Laboratory (https://sps-lab.org/)
-# Part of DYNAGNN: repository integration for pair-aware six-class GINE training
+# Part of DYNAGNN: repository integration for pair-aware GINE training
 from __future__ import annotations
 
 import json
@@ -16,7 +16,6 @@ import optuna
 from torch_geometric.loader import DataLoader
 
 from modules.pair_aware_gine import (
-    NUM_CLASSES,
     PairAwareHParams,
     PairAwareLossWeights,
     evaluate_saved_pair_aware_model,
@@ -41,7 +40,6 @@ def normalize_op(value: object) -> str:
 
 
 MODEL_TYPE = "pair_aware_gine"
-ACTIVITY_CLASSES = 5
 
 
 def _first_existing(paths: Sequence[Path], label: str) -> Path:
@@ -60,24 +58,6 @@ def _task_paths(data_dir: Path) -> dict[str, Path]:
         "kpi_spower": _first_existing(
             [data_dir / "KPI" / "KPI_spower.csv", data_dir / "KPI_spower.csv"],
             "KPI_spower.csv",
-        ),
-        "disc_voltage": _first_existing(
-            [
-                data_dir / "Disconnections" / "DISC_voltage.csv",
-                data_dir / "DISC" / "DISC_voltage.csv",
-                data_dir / "Dataset" / "DISC_voltage.csv",
-                data_dir / "DISC_voltage.csv",
-            ],
-            "DISC_voltage.csv",
-        ),
-        "disc_spower": _first_existing(
-            [
-                data_dir / "Disconnections" / "DISC_spower.csv",
-                data_dir / "DISC" / "DISC_spower.csv",
-                data_dir / "Dataset" / "DISC_spower.csv",
-                data_dir / "DISC_spower.csv",
-            ],
-            "DISC_spower.csv",
         ),
     }
 
@@ -181,8 +161,6 @@ def attach_pair_aware_targets(
     paths = _task_paths(Path(data_dir))
     kpi_voltage, kpi_voltage_lookup = _prepare_lookup(paths["kpi_voltage"])
     kpi_spower, kpi_spower_lookup = _prepare_lookup(paths["kpi_spower"])
-    disc_voltage, disc_voltage_lookup = _prepare_lookup(paths["disc_voltage"])
-    disc_spower, disc_spower_lookup = _prepare_lookup(paths["disc_spower"])
 
     node_vocab, contingency_vocab = _build_shared_vocab(graph_dataset)
     stats: dict[str, int] = {
@@ -193,10 +171,6 @@ def attach_pair_aware_targets(
         "edge_event_graphs": 0,
         "voltage_finite_kpi_targets": 0,
         "spower_finite_kpi_targets": 0,
-        "voltage_class5_targets": 0,
-        "spower_class5_targets": 0,
-        "voltage_class5_label_mask_mismatches": 0,
-        "spower_class5_label_mask_mismatches": 0,
     }
 
     for data in graph_dataset:
@@ -207,8 +181,6 @@ def attach_pair_aware_targets(
         rows = {
             "kpi_voltage": kpi_voltage_lookup.get(key),
             "kpi_spower": kpi_spower_lookup.get(key),
-            "disc_voltage": disc_voltage_lookup.get(key),
-            "disc_spower": disc_spower_lookup.get(key),
         }
         missing = [name for name, row in rows.items() if row is None]
         if missing:
@@ -218,8 +190,6 @@ def attach_pair_aware_targets(
         node_token = torch.zeros(num_nodes, dtype=torch.long)
         voltage_log = torch.full((num_nodes,), float("nan"), dtype=torch.float32)
         spower_log = torch.full((num_nodes,), float("nan"), dtype=torch.float32)
-        voltage_structural = torch.zeros(num_nodes, dtype=torch.bool)
-        spower_structural = torch.zeros(num_nodes, dtype=torch.bool)
 
         metadata = getattr(data, "metadata", {}) or {}
         for meta_key, node_meta in (metadata.get("node_metadata", {}) or {}).items():
@@ -233,24 +203,12 @@ def attach_pair_aware_targets(
                 if value is not None:
                     voltage_log[node_index] = float(np.log10(max(value, 0.0) + float(epsilon)))
                     stats["voltage_finite_kpi_targets"] += 1
-                disc_value = _numeric_value(
-                    rows["disc_voltage"], disc_voltage.columns, component_id
-                )
-                voltage_structural[node_index] = bool(
-                    disc_value is not None and disc_value > 0.5
-                )
 
             if node_type == "generator":
                 value = _numeric_value(rows["kpi_spower"], kpi_spower.columns, component_id)
                 if value is not None:
                     spower_log[node_index] = float(np.log10(max(value, 0.0) + float(epsilon)))
                     stats["spower_finite_kpi_targets"] += 1
-                disc_value = _numeric_value(
-                    rows["disc_spower"], disc_spower.columns, component_id
-                )
-                spower_structural[node_index] = bool(
-                    disc_value is not None and disc_value > 0.5
-                )
 
         event_node_mask, event_edge_mask, event_graph_type = _event_tensors(data)
         if int(event_graph_type.item()) == 0:
@@ -267,30 +225,6 @@ def attach_pair_aware_targets(
         data.event_graph_type = event_graph_type
         data.y_voltage_log_kpi = voltage_log
         data.y_spower_log_kpi = spower_log
-        data.voltage_structural_class5_mask = voltage_structural
-        data.spower_structural_class5_mask = spower_structural
-
-        voltage_labels = data.y_voltage[data.bus_node_mask]
-        voltage_structural_targets = voltage_structural[data.bus_node_mask]
-        spower_labels = data.y_spower[data.gen_node_mask]
-        spower_structural_targets = spower_structural[data.gen_node_mask]
-
-        stats["voltage_class5_targets"] += int(voltage_structural_targets.sum().item())
-        stats["spower_class5_targets"] += int(spower_structural_targets.sum().item())
-        stats["voltage_class5_label_mask_mismatches"] += int(
-            ((voltage_labels == 5) != voltage_structural_targets).sum().item()
-        )
-        stats["spower_class5_label_mask_mismatches"] += int(
-            ((spower_labels == 5) != spower_structural_targets).sum().item()
-        )
-
-    for task in ("voltage", "spower"):
-        mismatch_key = f"{task}_class5_label_mask_mismatches"
-        if int(stats[mismatch_key]) != 0:
-            raise RuntimeError(
-                f"{task} structural class-5 mask disagrees with labels: "
-                f"{stats[mismatch_key]} mismatches"
-            )
 
     logger.info("Pair-aware target attachment: %s", stats)
     return {
@@ -301,19 +235,17 @@ def attach_pair_aware_targets(
     }
 
 
-def _task_attr(task: str) -> tuple[str, str, str, str]:
+def _task_attr(task: str) -> tuple[str, str, str]:
     if task == "voltage":
         return (
             "y_voltage",
             "y_voltage_log_kpi",
-            "voltage_structural_class5_mask",
             "bus_node_mask",
         )
     if task == "spower":
         return (
             "y_spower",
             "y_spower_log_kpi",
-            "spower_structural_class5_mask",
             "gen_node_mask",
         )
     raise ValueError(f"Unsupported task: {task}")
@@ -323,16 +255,19 @@ def _prepare_task(
     task: str,
     train_graphs: Sequence,
     all_splits: Sequence[Sequence],
+    *,
+    num_classes: int,
 ) -> tuple[float, float]:
-    label_attr, log_attr, structural_attr, mask_attr = _task_attr(task)
+    label_attr, log_attr, mask_attr = _task_attr(task)
+    flag_class = num_classes - 1
     values: list[np.ndarray] = []
 
     for data in train_graphs:
         data.y_class = getattr(data, label_attr)
         data.y_log_kpi = getattr(data, log_attr)
-        data.structural_class5_mask = getattr(data, structural_attr)
+        # Regression targets are collected only for activity classes (< flag_class).
         mask = getattr(data, mask_attr).bool() & (data.y_class >= 0) & (
-            data.y_class < ACTIVITY_CLASSES
+            data.y_class < flag_class
         )
         target = data.y_log_kpi[mask]
         finite = torch.isfinite(target)
@@ -351,7 +286,6 @@ def _prepare_task(
         for data in split:
             data.y_class = getattr(data, label_attr)
             data.y_log_kpi = getattr(data, log_attr)
-            data.structural_class5_mask = getattr(data, structural_attr)
             standardized = torch.full_like(data.y_log_kpi, float("nan"))
             finite = torch.isfinite(data.y_log_kpi)
             standardized[finite] = (data.y_log_kpi[finite] - mean) / std
@@ -488,6 +422,7 @@ def _save_deployment_checkpoint(
     selected_output: str,
     best_epoch: int,
     best_validation_score: float,
+    num_classes: int,
 ) -> Path:
     checkpoint = {
         "checkpoint_version": 3,
@@ -496,7 +431,7 @@ def _save_deployment_checkpoint(
         "model_state_dict": state_dict,
         "hparams": asdict(hparams),
         "loss_weights": asdict(loss_weights),
-        "num_classes": NUM_CLASSES,
+        "num_classes": num_classes,
         "num_node_tokens": int(attachment["node_vocab_size"]),
         "num_contingency_tokens": int(attachment["contingency_vocab_size"]),
         "node_vocab": attachment["node_vocab"],
@@ -509,7 +444,7 @@ def _save_deployment_checkpoint(
         "cuts": [float(value) for value in cuts],
         "epsilon": float(epsilon),
         "gate_threshold": float(gate_threshold),
-        "class5_handling": "learned direct prediction; no deterministic override",
+        "flag_class_handling": "learned direct prediction; no deterministic override",
         "node_continuous_columns": [1, 2, 3, 4, 6],
         "edge_continuous_features": ["r", "x", "b1", "g1", "b2", "g2"],
         "config_version": (config.get("dynagnn", {}) or {}).get("version"),
@@ -544,9 +479,16 @@ def run_task_training(
     if n_trials < 1:
         raise ValueError("optuna.n_trials must be at least 1")
 
+    model_cfg = config.get("model", {}) or {}
+    if "num_classes" not in model_cfg:
+        raise KeyError("Missing required config key: model.num_classes")
+    num_classes = int(model_cfg["num_classes"])
+    if num_classes < 2:
+        raise ValueError(f"model.num_classes must be >= 2, got {num_classes}")
+
     target_mask_attr, task_name = _task_spec(task)
     log_mean, log_std = _prepare_task(
-        task, train_scaled, [train_scaled, val_scaled, test_scaled]
+        task, train_scaled, [train_scaled, val_scaled, test_scaled], num_classes=num_classes
     )
     logger.info("%s log-KPI mean=%.6f std=%.6f", task, log_mean, log_std)
 
@@ -556,9 +498,10 @@ def run_task_training(
     test_loader = DataLoader(test_scaled, batch_size=batch_size, shuffle=False)
 
     class_bins = ((config.get("kpi", {}) or {}).get("class_bins", {}) or {})
+    expected_cuts = num_classes - 2
     cuts = _float_list(
         (class_bins.get(task_name, {}) or {}).get("cuts"),
-        expected=4,
+        expected=expected_cuts,
         label=f"kpi.class_bins.{task_name}.cuts",
     )
     cuts_array = np.asarray(cuts, dtype=np.float64)
@@ -614,6 +557,7 @@ def run_task_training(
             selection_output=selection_output_arg,
             class_weight_mode=class_weight_mode,
             gate_pos_weight_mode=gate_pos_weight_mode,
+            num_classes=num_classes,
             logger=logger,
             trial=trial,
         )
@@ -675,6 +619,7 @@ def run_task_training(
         selected_output=selected_output,
         class_weight_mode=class_weight_mode,
         gate_pos_weight_mode=gate_pos_weight_mode,
+        num_classes=num_classes,
         logger=logger,
     )
 
@@ -694,6 +639,7 @@ def run_task_training(
         selected_output=selected_output,
         best_epoch=best_epoch,
         best_validation_score=float(best_trial.value),
+        num_classes=num_classes,
     )
     logger.info(
         "Saved %s deployment checkpoint: %s (trial=%d, selected_output=%s)",

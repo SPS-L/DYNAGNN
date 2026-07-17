@@ -13,7 +13,6 @@ End-to-end **pair-aware GINE training**: build a shared PyG dataset (voltage + s
 | `data/Dataset/Dataset_Voltage.csv`, `Dataset_Spower.csv` | Class labels (`0 … num_classes−1`) |
 | `data/Dataset/train_val_test_split.csv` | Train/validation/test split (built by `curve_process`) |
 | `data/KPI/KPI_voltage.csv`, `KPI_spower.csv` | Raw KPI values (for log-KPI regression targets) |
-| `data/Disconnections/DISC_voltage.csv`, `DISC_spower.csv` | Structural flag-class masks |
 | `data/op_graphs/*.pt` | Graph structure and metadata |
 | `data/op_electric_distance/*.csv` | `dz_fault` feature |
 | `config.yaml` | `training.*` (incl. `pair_aware`), `optuna.*`, `model.num_classes`, `kpi.class_bins.*.cuts`, `network.country_filter` |
@@ -39,11 +38,11 @@ End-to-end **pair-aware GINE training**: build a shared PyG dataset (voltage + s
 1. Load class-label datasets and the split CSV (must already exist from dataset construction).
 2. Build shared `graph_dataset` with `y_voltage` / `y_spower` masks; resolve each row’s **Contingency** on the graph and set `fault_on` (see [Event lookup](#event-lookup-and-fault_on-placement)).
 3. Append log electrical distance from fault to each node (`dz_fault`).
-4. Attach pair-aware tensors via `attach_pair_aware_targets()`: shared node/contingency vocabularies, event masks, log-KPI targets, structural flag-class masks.
+4. Attach pair-aware tensors via `attach_pair_aware_targets()`: shared node/contingency vocabularies, event masks, log-KPI targets.
 5. Fit feature scalers on the **train** split only; scale all splits.
 6. `run_voltage_training()` then `run_spower_training()` — each runs its own Optuna study maximizing the validation [selection score](#training-selection-score).
 
-Set `model.num_classes` to **`len(cuts) + 2`** so it matches the KPI cuts and one flag class from dataset construction.
+Set `model.num_classes` to **`len(cuts) + 2`** (must be >= 2): `len(cuts)` KPI activity classes plus one flag class (disconnected/controlled). The pipeline validates `len(kpi.class_bins.<task>.cuts) == num_classes - 2`.
 
 ## Model (pair-aware residual GINE)
 

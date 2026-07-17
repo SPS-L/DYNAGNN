@@ -11,7 +11,7 @@ Repository integration for pair-aware GINE training: attach shared identity/even
 
 | Function | Description |
 |----------|-------------|
-| `attach_pair_aware_targets(graph_dataset, data_dir=..., epsilon=..., logger=...)` | Shared node/contingency vocabularies, event masks, log-KPI targets, structural flag masks |
+| `attach_pair_aware_targets(graph_dataset, data_dir=..., epsilon=..., logger=...)` | Shared node/contingency vocabularies, event masks, log-KPI targets |
 | `run_task_training(task=..., train/val/test_scaled=..., ...)` | Independent Optuna study + test eval + deployment checkpoint |
 | `normalize_op(value)` | Canonical `operating_point_<N>` name |
 
@@ -20,7 +20,6 @@ Repository integration for pair-aware GINE training: attach shared identity/even
 | Source | Content |
 |--------|---------|
 | Combined KPI CSVs | Finite log-KPI regression targets |
-| Combined DISC CSVs | Structural flag-class masks |
 | Graph dataset | Topology, labels, event location metadata |
 
 ## Outputs (via `run_task_training`)
@@ -33,10 +32,11 @@ Repository integration for pair-aware GINE training: attach shared identity/even
 
 ## Flow (per task)
 
-1. Bind task-specific label / log-KPI / mask attributes; fit train-only log-KPI mean/std.
-2. Sample Optuna hparams from `optuna.hparams` (capacity + optimizer only).
-3. Train with fixed `training.pair_aware` loss weights; maximize validation selection score.
-4. Evaluate the winning trial on the test set; save the deployment checkpoint.
+1. Read `num_classes` from `config["model"]["num_classes"]` (must be >= 2); validate `len(cuts) == num_classes - 2`.
+2. Bind task-specific label / log-KPI / mask attributes; fit train-only log-KPI mean/std using activity classes only (labels `< num_classes - 1`).
+3. Sample Optuna hparams from `optuna.hparams` (capacity + optimizer only).
+4. Train with fixed `training.pair_aware` loss weights; maximize validation selection score.
+5. Evaluate the winning trial on the test set; save the deployment checkpoint.
 
 Voltage and Spower use **separate** Optuna studies but a **shared** node/contingency vocabulary from attachment.
 

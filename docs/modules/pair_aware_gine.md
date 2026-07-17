@@ -26,7 +26,7 @@ Shared **pair-aware residual GINE** model, losses, metrics, and training/evaluat
 - graph mean/max context;
 - multi-class logits, inactive (class-0) gate, and auxiliary log-KPI regression.
 
-The flag class (action / disconnection) is learned — not overwritten deterministically at evaluation time. Structural disconnection masks are used for target construction and audit only.
+The flag class (action / disconnection) is learned — not overwritten deterministically at evaluation time. No structural disconnection masks are used.
 
 Forward output keys: `class_logits`, `inactive_logit`, `log_kpi_std`.
 

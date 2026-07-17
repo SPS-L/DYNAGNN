@@ -492,8 +492,8 @@ def main() -> None:
     if "num_classes" not in model_cfg:
         raise KeyError("Missing required config key: model.num_classes (in config.yaml)")
     num_classes = int(model_cfg["num_classes"])
-    if num_classes != 6:
-        raise ValueError("The pair-aware GINE inference pipeline requires model.num_classes=6")
+    if num_classes < 2:
+        raise ValueError(f"model.num_classes must be >= 2, got {num_classes}")
 
     # Determine initialization duration
     infer_cfg = cfg.get("inference", {}) or {}

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Sustainable Power Systems Laboratory (https://sps-lab.org/)
-# Part of DYNAGNN: pair-aware six-class GINE inference helpers
+# Part of DYNAGNN: pair-aware GINE inference helpers
 from __future__ import annotations
 
 from pathlib import Path
@@ -35,6 +35,7 @@ def load_pair_aware_checkpoint(path: Path, *, expected_task: str) -> dict[str, A
     required = {
         "model_state_dict",
         "hparams",
+        "num_classes",
         "num_node_tokens",
         "num_contingency_tokens",
         "node_vocab",
@@ -63,6 +64,7 @@ def load_pair_aware_model(checkpoint: dict[str, Any], device: torch.device):
         num_contingency_tokens=int(checkpoint["num_contingency_tokens"]),
         target_mask_attr=target_mask_attr,
         hparams=PairAwareHParams(**hparams_dict),
+        num_classes=int(checkpoint["num_classes"]),
     )
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
@@ -162,8 +164,9 @@ def _decode(output: dict[str, torch.Tensor], checkpoint: dict[str, Any]) -> torc
             values,
             side="left",
         ).astype(np.int64)
+        flag = int(checkpoint["num_classes"]) - 1
         class_prediction = logits.argmax(dim=1).detach().cpu().numpy()
-        prediction[class_prediction == 5] = 5
+        prediction[class_prediction == flag] = flag
         return torch.tensor(prediction, dtype=torch.long, device=logits.device)
 
     raise ValueError(f"Unsupported selected_output in checkpoint: {selected_output!r}")

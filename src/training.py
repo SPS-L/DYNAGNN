@@ -856,8 +856,8 @@ def main() -> None:
     if "num_classes" not in model_cfg:
         raise KeyError("Missing required config key: model.num_classes (in config.yaml)")
     num_classes = int(model_cfg["num_classes"])
-    if num_classes != 6:
-        raise ValueError("The pair-aware GINE pipeline requires model.num_classes=6")
+    if num_classes < 2:
+        raise ValueError(f"model.num_classes must be >= 2, got {num_classes}")
     logger.info("Model: pair-aware residual GINE")
     logger.info("num_classes: %d", num_classes)
 
