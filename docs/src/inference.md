@@ -4,7 +4,7 @@
 
 Not part of `main.py`; run standalone after training.
 
-For **TwinEU DSL → IIDM model reduction** (switch retention), use the separate **`AMS/`** application instead — see [`AMS/README.md`](../../AMS/README.md). `DYNAGNN.py` exports prediction CSVs; AMS updates the IIDM in place.
+For **scenario `.dsl` → IIDM model reduction** (switch retention), use the separate **`AMS/`** / **`dynagnn-ams`** package instead — see [`AMS/README.md`](../../AMS/README.md). `DYNAGNN.py` exports prediction CSVs; AMS updates the IIDM in place.
 
 ## Command
 

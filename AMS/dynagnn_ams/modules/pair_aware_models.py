@@ -18,6 +18,42 @@ from .pair_aware_gine import PairAwareGINE, PairAwareHParams
 MODEL_TYPE = "pair_aware_gine"
 
 
+def resolve_torch_device(requested: str | torch.device | None = None) -> torch.device:
+    """Resolve ``auto`` / ``cpu`` / ``cuda`` / ``cuda:N`` / ``mps`` to a ``torch.device``."""
+    if isinstance(requested, torch.device):
+        return requested
+
+    raw = "auto" if requested is None else str(requested).strip().lower()
+    if not raw or raw == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+
+    if raw == "cpu":
+        return torch.device("cpu")
+
+    if raw == "mps":
+        if not getattr(torch.backends, "mps", None) or not torch.backends.mps.is_available():
+            raise RuntimeError(
+                "Device 'mps' requested but torch.backends.mps is not available. "
+                "Install the macOS PyTorch wheel (not the CPU-only Linux build)."
+            )
+        return torch.device("mps")
+
+    if raw == "cuda" or raw.startswith("cuda:"):
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"Device {raw!r} requested but CUDA is not available in this PyTorch build."
+            )
+        return torch.device(raw)
+
+    raise ValueError(
+        f"Unknown device {requested!r}. Use auto, cpu, mps, cuda, or cuda:N."
+    )
+
+
 @dataclass
 class InferencePredictionResult:
     voltage_predictions: Dict[str, int]
@@ -298,9 +334,6 @@ def aggregate_substation_predictions(
     substation_predictions: Dict[str, int] = {}
 
     for node_meta in metadata.get("node_metadata", {}).values():
-        country = str(node_meta.get("country", "")).upper()
-        if country != "FR":
-            continue
         substation_id = str(node_meta.get("substationId", "")).strip()
         if not substation_id:
             continue
@@ -337,7 +370,8 @@ def aggregate_max_substation_predictions(
 class PairAwareModels:
     """Load DYNAGNN v1.2 pair-aware GINE checkpoints and run AMS inference.
 
-    Copy these files from ``<DYNAGNN data.path>/model/<study_name>/`` into ``AMS/models/<network>/``:
+    Copy these files from ``<DYNAGNN data.path>/model/<study_name>/`` into
+    ``AMS/dynagnn_ams/models/<network>/``:
 
     - ``voltage_best_model.pt``
     - ``spower_best_model.pt``
@@ -348,18 +382,17 @@ class PairAwareModels:
     needed for inference live inside the ``.pt`` checkpoints.
     """
 
-    def __init__(self, models_dir: str | Path) -> None:
+    def __init__(
+        self,
+        models_dir: str | Path,
+        *,
+        device: str | torch.device | None = None,
+    ) -> None:
         self.models_dir = Path(models_dir)
         if not self.models_dir.is_dir():
             raise FileNotFoundError(f"Models directory not found: {self.models_dir}")
 
-        self.device = torch.device(
-            "cuda"
-            if torch.cuda.is_available()
-            else "mps"
-            if torch.backends.mps.is_available()
-            else "cpu"
-        )
+        self.device = resolve_torch_device(device)
 
         self.voltage_checkpoint = load_pair_aware_checkpoint(
             _find_checkpoint(self.models_dir, "voltage"),
@@ -421,11 +454,16 @@ class PairAwareModels:
             raise RuntimeError("PairAwareModels.initialize() must be called before predict()")
 
         metadata = getattr(graph, "metadata", {}) or {}
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            voltage_future = executor.submit(self._predict_voltage, graph, metadata)
-            spower_future = executor.submit(self._predict_spower, graph, metadata)
-            voltage_predictions = voltage_future.result()
-            spower_predictions = spower_future.result()
+        # MPS is not reliable with concurrent multi-threaded GPU submits.
+        if self.device.type == "mps":
+            voltage_predictions = self._predict_voltage(graph, metadata)
+            spower_predictions = self._predict_spower(graph, metadata)
+        else:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                voltage_future = executor.submit(self._predict_voltage, graph, metadata)
+                spower_future = executor.submit(self._predict_spower, graph, metadata)
+                voltage_predictions = voltage_future.result()
+                spower_predictions = spower_future.result()
 
         substation_predictions = aggregate_substation_predictions(
             metadata,

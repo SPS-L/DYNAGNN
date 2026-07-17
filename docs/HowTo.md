@@ -395,9 +395,19 @@ Set `model.num_classes` to **`len(cuts) + 2`**. Applied cuts are recorded in `<d
 
 ---
 
-## AMS — model reduction (`AMS/`)
+## AMS — model reduction (`AMS/` → pip package `dynagnn-ams`)
 
-The **`AMS/`** folder is a **standalone application** for **Adaptive Model Selection**: it uses trained DYNAGNN checkpoints to simplify node-breaker models before simulation. It is **not** invoked by `main.py` and does not use `config.yaml`.
+The **`AMS/`** folder is a **standalone pip package** (`dynagnn-ams`) for **Adaptive Model Selection**: it uses trained DYNAGNN checkpoints to simplify node-breaker models before simulation. It is **not** invoked by DYNAGNN `main.py` and does not use `config.yaml`.
+
+### Install
+
+```bash
+python3 -m pip install "dynagnn-ams @ git+https://github.com/SPS-L/DYNAGNN.git#subdirectory=AMS"
+# or from a local clone:
+python3 -m pip install -e /path/to/DYNAGNN/AMS
+```
+
+Dependencies (`torch`, `torch-geometric`, `pypowsybl`, …) are pulled by pip. Nordic checkpoints are bundled in the package.
 
 ### How it fits the repository
 
@@ -405,37 +415,29 @@ The **`AMS/`** folder is a **standalone application** for **Adaptive Model Selec
 |-------------|------|
 | `main.py` | Training pipeline (simulations → KPIs → checkpoints) |
 | `DYNAGNN.py` | Inference on new operating points and events |
-| `AMS/main.py` | Optional model reduction from TwinEU DSL (IIDM switch retention) |
-
-Dynamic activity prediction is the core of DYNAGNN. **`AMS/`** is an optional companion module for one AMS use case; it reuses trained checkpoints but is not part of the training or standard inference scripts.
+| `dynagnn-ams` | Optional model reduction from a scenario `.dsl` (IIDM switch retention) |
 
 ### Bundled Nordic models
 
-Ready-to-use deployment checkpoints for the Nordic case are in **`AMS/models/Nordic/`** (voltage/spower `.pt` files and scalers).
+Ready-to-use deployment checkpoints: **`AMS/dynagnn_ams/models/Nordic/`**.
 
 ### Checkpoints (other networks)
 
 ```bash
 NETWORK=MyCase
-mkdir -p "AMS/models/$NETWORK"
-cp "<data.path>/model/<study_name>/voltage_best_model.pt" "AMS/models/$NETWORK/"
-cp "<data.path>/model/<study_name>/spower_best_model.pt" "AMS/models/$NETWORK/"
-cp "<data.path>/model/<study_name>/x_scaler.pkl" "AMS/models/$NETWORK/"
-cp "<data.path>/model/<study_name>/edge_attr_scaler.pkl" "AMS/models/$NETWORK/"
+mkdir -p "AMS/dynagnn_ams/models/$NETWORK"
+cp "<data.path>/model/<study_name>/voltage_best_model.pt" "AMS/dynagnn_ams/models/$NETWORK/"
+cp "<data.path>/model/<study_name>/spower_best_model.pt" "AMS/dynagnn_ams/models/$NETWORK/"
+cp "<data.path>/model/<study_name>/x_scaler.pkl" "AMS/dynagnn_ams/models/$NETWORK/"
+cp "<data.path>/model/<study_name>/edge_attr_scaler.pkl" "AMS/dynagnn_ams/models/$NETWORK/"
 ```
-
-Multiple networks can coexist (`AMS/models/Nordic/`, `AMS/models/MyCase/`, …). Select with `--network` on the CLI.
 
 ### Run
 
 ```bash
-cd AMS
-python3 main.py <scenario.dsl> <network.xiidm> <network.dyd> --network Nordic --epsilon 1
+dynagnn-ams <scenario.dsl> <network.xiidm> <network.dyd> --network Nordic --epsilon 1
 ```
 
-- **`--epsilon`** — retain node-breaker switches in substations whose max predicted class is ≥ this value (default `1.0`).
-- **`--json`** — optionally export parsed DSL locations to JSON under `AMS/`.
-
-The IIDM is **modified in place**. Use a copy if you need the original file.
+The IIDM is **modified in place**.
 
 Full reference: [`AMS/README.md`](../AMS/README.md).

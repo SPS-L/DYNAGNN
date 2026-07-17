@@ -16,7 +16,7 @@ This repository centres on **dynamic activity prediction**: a pair-aware residua
 
 That prediction stack is self-contained — **`main.py`** runs the full training pipeline; **`DYNAGNN.py`** applies the trained models to new operating points and writes per-component class predictions.
 
-The work also belongs to the wider **AMS (Adaptive Model Selection)** research programme, which asks where a time-domain simulation should retain full model detail. The optional **`AMS/`** folder implements one such workflow: **node-breaker model reduction** from TwinEU DSL scenarios. Ready-to-use **Nordic checkpoints** are bundled under `AMS/models/Nordic/`.
+The work also belongs to the wider **AMS (Adaptive Model Selection)** research programme, which asks where a time-domain simulation should retain full model detail. The optional **`AMS/`** folder is the pip package **`dynagnn-ams`**: **node-breaker model reduction** from a scenario `.dsl` plus network IIDM/DYD. Ready-to-use **Nordic checkpoints** are bundled under `AMS/dynagnn_ams/models/Nordic/`.
 
 ## What DYNAGNN does
 
@@ -30,7 +30,7 @@ The work also belongs to the wider **AMS (Adaptive Model Selection)** research p
 |--------|------|
 | **`main.py`** | Full **training** pipeline (simulations → KPIs → datasets → Optuna → checkpoints) |
 | **`DYNAGNN.py`** | **General inference** — per-component activity classes on new OPs / events (CSV outputs) |
-| **`AMS/main.py`** | **Model reduction** (optional) — TwinEU DSL → IIDM switch simplification; **Nordic checkpoints bundled** under `AMS/models/Nordic/` |
+| **`dynagnn-ams` / `AMS/`** | **Model reduction** (optional) — scenario `.dsl` → IIDM switch simplification; **Nordic checkpoints** in `AMS/dynagnn_ams/models/Nordic/` |
 
 See [`AMS/README.md`](AMS/README.md) for the AMS workflow.
 
@@ -185,8 +185,8 @@ python3 DYNAGNN.py --case-dir /path/to/operating_point --events-csv /path/to/eve
 - `scenario_<id>/prediction_voltage.csv`, `prediction_spower.csv`
 
 ---
-## Adaptive Model Selection (`AMS/main.py`)
-**AMS (`AMS/main.py`)** — optional **model reduction** from TwinEU DSL scenarios: checkpoints under `AMS/models/<network>/`, substation activity predictions, IIDM switch `retained` flags updated in place. Independent of `main.py`; does not read `config.yaml`. Ready-to-use **Nordic models** are in `AMS/models/Nordic/`. See [`AMS/README.md`](AMS/README.md).
+## Adaptive Model Selection (`dynagnn-ams`)
+**AMS (`dynagnn-ams`)** — optional **model reduction** from a scenario `.dsl` plus network IIDM/DYD: `pip install "dynagnn-ams @ git+https://github.com/SPS-L/DYNAGNN.git#subdirectory=AMS"`, then `dynagnn-ams scenario.dsl network.xiidm network.dyd -n Nordic`. Checkpoints under `AMS/dynagnn_ams/models/<network>/`. Independent of DYNAGNN `main.py`; does not read `config.yaml`. See [`AMS/README.md`](AMS/README.md).
 
 ## Nordic example — train on bundled data
 

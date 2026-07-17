@@ -227,9 +227,6 @@ def _attach_inference_masks(data: Data, metadata: dict) -> None:
         if idx < 0 or idx >= num_nodes:
             continue
         node_type = str(node_meta.get("type", "")).lower()
-        country = str(node_meta.get("country", "")).upper()
-        if country != "FR":
-            continue
         if node_type == "bus":
             bus_mask[idx] = True
         elif node_type == "generator" and bool(node_meta.get("hasDynamicModel", False)):
