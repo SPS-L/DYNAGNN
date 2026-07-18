@@ -53,9 +53,9 @@ After evaluating the final best model on the test set, diagnostic figures are wr
 
 | File | Contents |
 |------|----------|
-| `loss_curve.png` | Train and validation total loss per epoch (from the winning Optuna trial’s `optuna_trials/trial_N/history.csv`; val loss is diagnostic only — selection still uses `val_*_score`) |
-| `score_curve.png` | Validation selection scores per epoch (`class` / `gated` / `logKPI`, plus the selected score) from the same `history.csv` |
-| `confusion_matrix.png` | Row-normalised confusion matrix on the test set |
+| `loss_curve.png` | Train and validation total loss per epoch (from the winning Optuna trial’s `optuna_trials/trial_N/history.csv`; the deployment model itself is a later train+val retrain) |
+| `score_curve.png` | Validation selection scores per epoch (`class` / `gated` / `logKPI`, plus the selected score) from the same Optuna `history.csv` |
+| `confusion_matrix.png` | Row-normalised confusion matrix on the test set (final train+val model) |
 | `distance_histogram.png` | Histogram of signed prediction offsets (pred − true) |
 | `node_example_cls<N>_<UNDER|OVER>_ex<k>_of_5.png` | Up to 5 under- and 5 over-prediction examples |
 

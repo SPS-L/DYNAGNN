@@ -40,7 +40,7 @@ End-to-end **pair-aware GINE training**: build a shared PyG dataset (voltage + s
 3. Append log electrical distance from fault to each node (`dz_fault`).
 4. Attach pair-aware tensors via `attach_pair_aware_targets()`: shared node/contingency vocabularies, event masks, log-KPI targets.
 5. Fit feature scalers on the **train** split only; scale all splits.
-6. `run_voltage_training()` then `run_spower_training()` — each runs its own Optuna study maximizing the validation [selection score](#training-selection-score).
+6. `run_voltage_training()` then `run_spower_training()` — each runs its own Optuna study maximizing the validation [selection score](#training-selection-score), then **retrains** the winning hparams on train+val for `best_epoch` epochs and evaluates that model on the held-out test set.
 
 Set `model.num_classes` to **`len(cuts) + 2`** (must be >= 2): `len(cuts)` KPI activity classes plus one flag class (disconnected/controlled). The pipeline validates `len(kpi.class_bins.<task>.cuts) == num_classes - 2`.
 
@@ -111,6 +111,10 @@ score = 0.40·balanced_accuracy + 0.30·macro_f1 + 0.20·accuracy + 0.10·within
 computed on validation predictions for the configured multi-class task. The score is **not** backpropagated; gradients come from the multi-term pair-aware loss only.
 
 `selection_output` chooses which decoding path is scored when set to `auto` (best among `class` / `gated` / `log_kpi` on validation) or a fixed mode.
+
+## Final train+val retrain
+
+After Optuna, the deployment checkpoint is **not** the winning trial’s train-only weights. The best hparams and decode path are used to retrain on **train+val** for exactly the trial’s `best_epoch` epochs. That model is saved as `<task>_best_model.pt` and scored on test. Optuna SQLite/CSV and the train/val loss/score plots still come from the best trial’s `history.csv`.
 
 ## Related modules
 

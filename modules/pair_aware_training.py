@@ -628,14 +628,20 @@ def run_task_training(
     study.trials_dataframe().to_csv(task_dir / "optuna_trials.csv", index=False)
     best_trial = study.best_trial
     best_hparams = _hparams_from_best_params(best_trial.params)
-    state_path = Path(str(best_trial.user_attrs.get("model_state_path", "")))
-    if not state_path.exists():
-        raise FileNotFoundError(
-            f"Best {task} Optuna trial state was not found: {state_path}"
-        )
-    state_dict = torch.load(state_path, map_location="cpu", weights_only=False)
     selected_output = str(best_trial.user_attrs.get("selected_output", "class"))
     best_epoch = int(best_trial.user_attrs.get("best_epoch", 0))
+    if best_epoch < 1:
+        raise RuntimeError(
+            f"Best {task} Optuna trial {best_trial.number} has invalid best_epoch={best_epoch}"
+        )
+
+    # Train/val curves stay tied to the winning Optuna trial (not the retrain).
+    optuna_state_path = Path(str(best_trial.user_attrs.get("model_state_path", "")))
+    best_history_csv = optuna_state_path.parent / "history.csv"
+    if not best_history_csv.exists():
+        raise FileNotFoundError(
+            f"Best {task} Optuna trial history was not found: {best_history_csv}"
+        )
 
     logger.info(
         "========== %s: best trial %d ==========",
@@ -649,14 +655,56 @@ def run_task_training(
         selected_output,
         best_trial.params,
     )
-    logger.info("Evaluating best %s checkpoint on the held-out test set...", task)
 
-    best_history_csv = state_path.parent / "history.csv"
+    # Final model: retrain best hparams on train+val for best_epoch epochs, then test.
+    train_val_scaled = list(train_scaled) + list(val_scaled)
+    train_val_loader = DataLoader(train_val_scaled, batch_size=batch_size, shuffle=True)
+    final_root = task_dir / "final_retrain"
+    logger.info(
+        "Retraining %s on train+val (%d graphs) for %d epochs with best hparams...",
+        task,
+        len(train_val_scaled),
+        best_epoch,
+    )
+    retrain_result = run_pair_aware_training(
+        task=task,
+        target_mask_attr=target_mask_attr,
+        train_loader=train_val_loader,
+        validation_loader=None,
+        test_loader=None,
+        output_dir=final_root,
+        num_node_tokens=int(attachment["node_vocab_size"]),
+        num_contingency_tokens=int(attachment["contingency_vocab_size"]),
+        hparams=best_hparams,
+        loss_weights=loss_weights,
+        log_mean=log_mean,
+        log_std=log_std,
+        cuts=cuts_array,
+        epsilon=epsilon,
+        gate_threshold=gate_threshold,
+        epochs=epochs,
+        patience=patience,
+        fixed_epochs=best_epoch,
+        selection_output=selected_output,
+        class_weight_mode=class_weight_mode,
+        gate_pos_weight_mode=gate_pos_weight_mode,
+        num_classes=num_classes,
+        logger=logger,
+        trial=None,
+    )
+    state_path = Path(str(retrain_result["model_state_path"]))
+    if not state_path.exists():
+        raise FileNotFoundError(
+            f"Final {task} train+val retrain state was not found: {state_path}"
+        )
+    state_dict = torch.load(state_path, map_location="cpu", weights_only=False)
+
+    logger.info("Evaluating final %s train+val model on the held-out test set...", task)
     test_result = evaluate_saved_pair_aware_model(
         task=task,
         target_mask_attr=target_mask_attr,
         state_dict=state_dict,
-        train_loader=train_loader,
+        train_loader=train_val_loader,
         test_loader=test_loader,
         output_dir=training_dir,
         num_node_tokens=int(attachment["node_vocab_size"]),
@@ -695,7 +743,7 @@ def run_task_training(
         num_classes=num_classes,
     )
     logger.info(
-        "Saved %s deployment checkpoint: %s (trial=%d, selected_output=%s)",
+        "Saved %s deployment checkpoint: %s (trial=%d, train+val retrain, selected_output=%s)",
         task,
         checkpoint_path,
         best_trial.number,
@@ -708,6 +756,7 @@ def run_task_training(
         "selected_output": selected_output,
         "hparams": asdict(best_hparams),
         "checkpoint": str(checkpoint_path),
+        "final_retrain_path": str(state_path),
         "test": test_result,
         "log_kpi_mean": log_mean,
         "log_kpi_std": log_std,

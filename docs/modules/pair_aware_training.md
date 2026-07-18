@@ -31,7 +31,8 @@ Repository integration for pair-aware GINE training: attach shared identity/even
 | `data/model/<study_name>/x_scaler.pkl`, `edge_attr_scaler.pkl` | Train-fit feature scalers |
 | `data/training/<study_name>/<task>/optuna_*.sqlite3`, `optuna_trials.csv` | Optuna study artifacts |
 | `data/training/<study_name>/<task>/optuna_trials/trial_N/` | Per-trial `history.csv`, `model_state.pt`, `model_metadata.json` |
-| `data/training/<study_name>/<task>/plots/` | Final diagnostic figures (incl. loss curve from best trial) |
+| `data/training/<study_name>/<task>/final_retrain/` | Train+val retrain of best hparams (`history.csv`, `model_state.pt`) |
+| `data/training/<study_name>/<task>/plots/` | Final diagnostic figures (train/val curves from best Optuna trial; test plots from final model) |
 
 ## Flow (per task)
 
@@ -39,7 +40,8 @@ Repository integration for pair-aware GINE training: attach shared identity/even
 2. Bind task-specific label / log-KPI / mask attributes; fit train-only log-KPI mean/std using activity classes only (labels `< num_classes - 1`).
 3. Sample Optuna hparams from `optuna.hparams` (capacity + optimizer only).
 4. Train with fixed `training.pair_aware` loss weights; maximize validation selection score.
-5. Evaluate the winning trial on the test set; save the deployment checkpoint.
+5. Retrain the best hparams on **train+val** for the winning trial’s `best_epoch` epochs (no validation early stopping).
+6. Evaluate that final model on the test set; save it as the deployment checkpoint. Train/val Optuna plots and study tables remain from the best trial.
 
 Voltage and Spower use **separate** Optuna studies but a **shared** node/contingency vocabulary from attachment.
 

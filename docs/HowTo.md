@@ -375,7 +375,7 @@ inference:
   initialization_duration: 10.0  # steady-state run before graph build; use 0 to skip
 ```
 
-With `model.num_classes = len(cuts) + 2`, the highest class index is the action/disconnection **flag** class. Voltage and Spower are tuned independently with Optuna; validation checkpoints maximize a balanced multi-class selection score (see [`src/training.md`](src/training.md)). Deployment checkpoints are written under `model/<study_name>/` as `voltage_best_model.pt` and `spower_best_model.pt`.
+With `model.num_classes = len(cuts) + 2`, the highest class index is the action/disconnection **flag** class. Voltage and Spower are tuned independently with Optuna; validation checkpoints maximize a balanced multi-class selection score (see [`src/training.md`](src/training.md)). After the search, best hparams are **retrained on train+val** for the winning trial’s `best_epoch` epochs; that model is written under `model/<study_name>/` as `voltage_best_model.pt` and `spower_best_model.pt` and evaluated on test.
 
 **Example (Nordic):** four cuts → classes 0–4 by KPI magnitude, flag class 5, `num_classes: 6`.
 

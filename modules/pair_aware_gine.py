@@ -1162,7 +1162,8 @@ def evaluate_saved_pair_aware_model(
     """Load a saved state, evaluate it on test data, and export test metrics.
 
     ``history_csv`` should point at the winning Optuna trial's ``history.csv``
-    (beside ``model_state.pt``) so the loss curve is written in that trial folder.
+    so train/val curves stay from the Optuna search even when the evaluated
+    weights come from the final train+val retrain.
     """
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
