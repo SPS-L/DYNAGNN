@@ -5,9 +5,10 @@
 
 All figures are written under ``<training_dir>/<task>/plots/``
 (where ``training_dir`` is ``data/training/<study_name>/``).
-``loss_curve.png`` is built from the winning Optuna trial's ``history.csv``
-(under ``optuna_trials/trial_N/``), but the PNG itself is saved in the shared
-task ``plots/`` folder with the other diagnostics.
+``loss_curve.png`` / ``score_curve.png`` are built from the winning Optuna
+trial's ``history.csv`` (under ``optuna_trials/trial_N/``), but the PNGs
+themselves are saved in the shared task ``plots/`` folder with the other
+diagnostics.
 """
 from __future__ import annotations
 
@@ -49,7 +50,7 @@ def _ensure_plots_dir(training_dir: Path, task: str) -> Path:
 # ---------------------------------------------------------------------------
 
 def plot_loss_curve(history_path: Path, plots_dir: Path, task: str) -> None:
-    """Read ``history.csv`` and write ``loss_curve.png``."""
+    """Read ``history.csv`` and write ``loss_curve.png`` (train + val if present)."""
     plt = _safe_import_plt()
     if plt is None:
         logger.warning("matplotlib not available; skipping loss_curve.png")
@@ -73,6 +74,43 @@ def plot_loss_curve(history_path: Path, plots_dir: Path, task: str) -> None:
     fig.savefig(out, dpi=_DPI, bbox_inches="tight")
     plt.close(fig)
     logger.info("Saved loss_curve.png → %s", out)
+
+
+def plot_score_curve(history_path: Path, plots_dir: Path, task: str) -> None:
+    """Plot validation selection scores from ``history.csv`` → ``score_curve.png``."""
+    plt = _safe_import_plt()
+    if plt is None:
+        logger.warning("matplotlib not available; skipping score_curve.png")
+        return
+
+    df = pd.read_csv(history_path)
+    series = [
+        ("val_class_score", "class", "#1f77b4"),
+        ("val_gated_score", "gated", "#2ca02c"),
+        ("val_log_kpi_score", "logKPI", "#d62728"),
+        ("val_selected_score", "selected", "#ff7f0e"),
+    ]
+    available = [(col, label, color) for col, label, color in series if col in df.columns]
+    if not available:
+        logger.warning("No val_*_score columns in %s; skipping score_curve.png", history_path)
+        return
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for col, label, color in available:
+        style = "--" if col == "val_selected_score" else "-"
+        width = 2.0 if col == "val_selected_score" else 1.5
+        ax.plot(df["epoch"], df[col], label=label, color=color, linestyle=style, linewidth=width)
+    ax.set_title(f"{task.capitalize()} — validation selection scores", fontsize=14)
+    ax.set_xlabel("Epoch", fontsize=12)
+    ax.set_ylabel("Selection score", fontsize=12)
+    ax.set_ylim(0.0, 1.05)
+    ax.legend(fontsize=11)
+    ax.grid(axis="y", alpha=0.25)
+    plt.tight_layout()
+    out = plots_dir / "score_curve.png"
+    fig.savefig(out, dpi=_DPI, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved score_curve.png → %s", out)
 
 
 # ---------------------------------------------------------------------------
@@ -351,8 +389,12 @@ def save_training_plots(
             plot_loss_curve(history_csv, plots_dir, task)
         except Exception:
             logger.exception("Failed to save loss_curve.png")
+        try:
+            plot_score_curve(history_csv, plots_dir, task)
+        except Exception:
+            logger.exception("Failed to save score_curve.png")
     else:
-        logger.warning("history.csv not found at %s; skipping loss curve.", history_csv)
+        logger.warning("history.csv not found at %s; skipping loss/score curves.", history_csv)
 
     # 2. Confusion matrix
     try:

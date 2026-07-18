@@ -785,6 +785,42 @@ def _scale_split(
     return scaled
 
 
+def _format_op_label(op_name: str) -> str:
+    """Normalize ``operating_point_3`` / ``3`` → ``OP3`` for logging."""
+    raw = str(op_name).strip()
+    if not raw:
+        return "OP?"
+    lower = raw.lower()
+    if lower.startswith("operating_point_"):
+        suffix = raw.split("_", 2)[-1]
+        return f"OP{suffix}"
+    if lower.startswith("op") and len(raw) > 2 and raw[2:].replace("_", "").isalnum():
+        return f"OP{raw[2:].lstrip('_')}"
+    if raw.isdigit():
+        return f"OP{raw}"
+    return raw
+
+
+def _unique_op_labels(graphs: Sequence) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for data in graphs:
+        label = _format_op_label(getattr(data, "op_name", ""))
+        if label not in seen:
+            seen.add(label)
+            labels.append(label)
+
+    def _sort_key(label: str) -> tuple:
+        if label.startswith("OP"):
+            suffix = label[2:]
+            if suffix.isdigit():
+                return (0, int(suffix), "")
+            return (1, suffix)
+        return (2, label)
+
+    return sorted(labels, key=_sort_key)
+
+
 def _split_graph_dataset_by_csv(graph_dataset: Sequence, split_csv: Path) -> tuple[list, list, list]:
     split_df = pd.read_csv(split_csv)
     required = {"split", "operating_point", "contingency"}
@@ -937,7 +973,13 @@ def main() -> None:
     node_cont_cols = [1, 2, 3, 4, 6]
     batch_size = int(training_cfg.get("batch_size", 16))
     train_all, val_all, test_all = _split_graph_dataset_by_csv(graph_dataset, split_csv)
+    train_ops = _unique_op_labels(train_all)
+    val_ops = _unique_op_labels(val_all)
+    test_ops = _unique_op_labels(test_all)
     logger.info("Shared split sizes: train=%d val=%d test=%d", len(train_all), len(val_all), len(test_all))
+    logger.info("Train OPs: %s", ", ".join(train_ops))
+    logger.info("Val OPs:   %s", ", ".join(val_ops))
+    logger.info("Test OPs:  %s", ", ".join(test_ops))
 
     # Fit ONE set of scalers (same graph feature space for both tasks)
     x_scaler = StandardScaler()

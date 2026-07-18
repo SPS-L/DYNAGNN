@@ -966,6 +966,9 @@ def run_pair_aware_training(
             if selected not in candidates:
                 raise ValueError(f"Unsupported selection_output: {selected!r}")
             score = float(candidates[selected])
+            # Record val loss for diagnostics / loss_curve.png (not used for selection).
+            for key, value in val_result["loss"].items():
+                row[f"val_{key}_loss"] = float(value)
             for name, value in candidates.items():
                 row[f"val_{name}_score"] = float(value)
             row["val_selected_output"] = selected
@@ -985,12 +988,16 @@ def run_pair_aware_training(
 
             marker = "*" if improved else " "
             logger.info(
-                "Epoch %03d %s train_loss=%.4f | val_score=%.4f [%s]",
+                "Epoch %03d %s | train=%.4f | val_loss=%.4f | val class=%.4f gated=%.4f logKPI=%.4f | selected=%s %.4f",
                 epoch,
                 marker,
                 train_result["loss"]["total"],
-                score,
+                float(val_result["loss"]["total"]),
+                float(candidates["class"]),
+                float(candidates["gated"]),
+                float(candidates["log_kpi"]),
                 selected,
+                score,
             )
             history.append(row)
 
