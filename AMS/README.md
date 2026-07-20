@@ -27,13 +27,35 @@ dynagnn-ams <scenario.dsl> <network.xiidm> <network.dyd> \
   --network Nordic --epsilon 1 --device mps
 ```
 
+**Custom checkpoints** (from your own DYNAGNN training) instead of bundled Nordic models:
+
+```bash
+# Option A — models root with a <network>/ subfolder (same layout as dynagnn_ams/models/)
+dynagnn-ams scenario.dsl network.xiidm network.dyd \
+  --network FR --models-dir /path/to/my_models --epsilon 1 --device mps
+
+# Option B — point directly at the checkpoint folder
+dynagnn-ams scenario.dsl network.xiidm network.dyd \
+  --network FR --models-dir /path/to/my_models/FR --epsilon 1 --device mps
+```
+
+Expected checkpoint folder contents (same as `data/model/<study_name>/` after training):
+
+```
+<network>/
+├── voltage_best_model.pt
+├── spower_best_model.pt
+├── x_scaler.pkl
+└── edge_attr_scaler.pkl
+```
+
 | Argument | Description |
 |----------|-------------|
 | `dsl_path` | Scenario `.dsl` |
 | `iidm_path` | Network `.iidm` / `.xiidm` (**modified in place**) |
 | `dyd_path` | Dynamic models `.dyd` |
-| `--network`, `-n` | Subfolder under packaged `models/` (e.g. `Nordic`) |
-| `--models-dir` | Optional override root containing `<network>/` checkpoints |
+| `--network`, `-n` | Network name (`Nordic`, `FR`, …); subfolder under packaged or override `models/` |
+| `--models-dir` | Optional local models root **or** direct checkpoint folder (see above) |
 | `--epsilon` | Retain switches where predicted class ≥ ε (default `1.0`) |
 | `--device` | `auto` (default), `cpu`, `mps`, `cuda`, or `cuda:N` |
 | `--json [PATH]` | Optional export of DSL location lists |
@@ -50,6 +72,7 @@ action_locations, events_list, substation_predictions = run(
     "network.xiidm",
     "network.dyd",
     network="Nordic",
+    models_dir="/path/to/my_models",  # optional; omit for bundled Nordic checkpoints
     epsilon=1.0,
     device="mps",
 )

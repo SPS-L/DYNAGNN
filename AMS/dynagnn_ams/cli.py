@@ -18,13 +18,49 @@ def _log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
+def _is_checkpoint_bundle(path: Path) -> bool:
+    """True if ``path`` looks like a DYNAGNN deployment folder (``.pt`` + scalers)."""
+    if not path.is_dir():
+        return False
+    checkpoint_names = (
+        "voltage_best_model.pt",
+        "spower_best_model.pt",
+    )
+    return any((path / name).is_file() for name in checkpoint_names)
+
+
 def resolve_models_dir(network: str, *, models_root: Path | None = None) -> Path:
-    """Return ``…/models/<network>/`` (packaged models or an override root)."""
+    """Return the checkpoint folder for ``network``.
+
+    Resolution order when ``models_root`` is set:
+
+    1. ``models_root`` itself, if it already contains deployment checkpoints.
+    2. ``models_root / <network> /``, if that subfolder exists.
+
+    When ``models_root`` is omitted, use packaged ``dynagnn_ams/models/<network>/``.
+    """
     name = str(network).strip()
     if not name:
         raise ValueError("network name must be non-empty")
-    root = DEFAULT_MODELS_DIR if models_root is None else Path(models_root)
-    return root / name
+
+    if models_root is None:
+        return DEFAULT_MODELS_DIR / name
+
+    root = Path(models_root).expanduser().resolve()
+    if _is_checkpoint_bundle(root):
+        return root
+
+    nested = root / name
+    if nested.is_dir():
+        return nested
+
+    raise FileNotFoundError(
+        f"Models directory not found for network {name!r}. "
+        f"Looked for checkpoints in {root} and {nested}. "
+        f"Expected layout: <models-root>/{name}/{{voltage_best_model.pt, spower_best_model.pt, "
+        f"x_scaler.pkl, edge_attr_scaler.pkl}} or pass the checkpoint folder directly via "
+        f"--models-dir."
+    )
 
 
 def run(
@@ -52,14 +88,16 @@ def run(
         aggregate_max_substation_predictions,
     )
 
-    resolved_models_dir = (
-        Path(models_dir) if models_dir is not None else resolve_models_dir(network)
+    resolved_models_dir = resolve_models_dir(
+        network,
+        models_root=Path(models_dir) if models_dir is not None else None,
     )
     if not resolved_models_dir.is_dir():
         raise FileNotFoundError(
             f"Models directory not found: {resolved_models_dir}. "
-            f"Install dynagnn-ams with bundled models, or pass models_dir=…/models/{network.strip()}/."
+            f"Install dynagnn-ams with bundled models, or pass --models-dir."
         )
+    _log(f"[dynagnn-ams] models={resolved_models_dir}")
 
     # Fixed pipeline steps (ETA is approximate: early steps often dominate).
     with tqdm(
@@ -145,7 +183,10 @@ def main(argv: list[str] | None = None) -> int:
         "--models-dir",
         type=Path,
         default=None,
-        help="Override models root (directory that contains <network>/ checkpoints)",
+        help=(
+            "Override packaged checkpoints: path to models root (<network>/ subfolder) "
+            "or direct checkpoint folder (voltage_best_model.pt, spower_best_model.pt, …)"
+        ),
     )
     parser.add_argument(
         "--epsilon",
@@ -178,10 +219,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"DYD file not found: {args.dyd_path}", file=sys.stderr)
         return 1
 
-    models_dir = None
-    if args.models_dir is not None:
-        models_dir = args.models_dir / args.network.strip()
-
     try:
         _log("[dynagnn-ams] loading libraries (torch / pypowsybl; can take a while)…")
         action_locations, events_list, _predictions = run(
@@ -189,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
             args.iidm_path,
             args.dyd_path,
             network=args.network,
-            models_dir=models_dir,
+            models_dir=args.models_dir,
             epsilon=args.epsilon,
             device=args.device,
         )

@@ -435,8 +435,15 @@ cp "<data.path>/model/<study_name>/edge_attr_scaler.pkl" "AMS/dynagnn_ams/models
 ### Run
 
 ```bash
+# Bundled Nordic checkpoints (default)
 dynagnn-ams <scenario.dsl> <network.xiidm> <network.dyd> --network Nordic --epsilon 1
+
+# Your own trained checkpoints (no need to copy into the pip package)
+dynagnn-ams <scenario.dsl> <network.xiidm> <network.dyd> \
+  --network MyCase --models-dir /path/to/my_models --epsilon 1
 ```
+
+Pass `--models-dir` as either the models **root** (`…/my_models/MyCase/…`) or the **checkpoint folder** directly if it already contains `voltage_best_model.pt` and `spower_best_model.pt`.
 
 The IIDM is **modified in place**.
 
