@@ -11,7 +11,7 @@ End-to-end **pair-aware GINE training**: build a shared PyG dataset (voltage + s
 | Source | Content |
 |--------|---------|
 | `data/Dataset/Dataset_Voltage.csv`, `Dataset_Spower.csv` | Class labels (`0 … num_classes−1`) |
-| `data/Dataset/train_val_test_split.csv` | Train/validation/test split (built by `curve_process`) |
+| `data/Dataset/train_val_test_split.csv` | Train/validation/test split (built by `split`) |
 | `data/KPI/KPI_voltage.csv`, `KPI_spower.csv` | Raw KPI values (for log-KPI regression targets) |
 | `data/op_graphs/*.pt` | Graph structure and metadata |
 | `data/op_electric_distance/*.csv` | `dz_fault` feature |

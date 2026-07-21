@@ -142,9 +142,12 @@ python3 main.py
 Omit both flags for a **full run**. Use **`--from-step`** to resume from a later stage; use **`--to-step`** to stop after a stage (e.g. `--to-step curve_process` for KPI cut analysis).
 
 ```bash
-python3 main.py --to-step curve_process   # through combined KPI tables + split
+python3 main.py --to-step curve_process   # through combined KPI tables
+python3 main.py --to-step split           # through split CSV (includes curve_process)
 python3 main.py --from-step build_op_assets # skip init + simulations; from graph assets
 python3 main.py --from-step curve_process   # from KPI/curve post-processing
+python3 main.py --from-step split --to-step split  # rebuild split only
+python3 main.py --from-step split                  # split + dataset + training
 python3 main.py --from-step dataset         # from dataset construction
 python3 main.py --from-step training        # retrain only
 ```
@@ -239,7 +242,7 @@ source .venv/bin/activate   # if using venv
 python3 main.py
 ```
 
-`main.py` runs, in order: initialization and Dynawo contingency simulations → graph assets → curve/KPI post-processing (including combined KPI tables and split) → dataset build → pair-aware GINE Optuna training. Use `--from-step` / `--to-step` to control the run range when rerunning (see [Step 1](#step-1--run-training-mainpy)).
+`main.py` runs, in order: initialization and Dynawo contingency simulations → graph assets → curve/KPI post-processing (combined KPI tables) → train/val/test split → dataset build → pair-aware GINE Optuna training. Use `--from-step` / `--to-step` to control the run range when rerunning (see [Step 1](#step-1--run-training-mainpy)).
 
 This example has **many** contingencies × 9 operating points; the first full run can take a long time. Progress and errors are written to:
 

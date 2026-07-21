@@ -21,12 +21,13 @@ if str(PROJECT_ROOT) not in sys.path:
 from modules.dynawo_runner import write_simulation_log_header
 from modules.paths import CONFIG_PATH, DATA_DIR, load_config
 from modules.pipeline_logging import configure_pipeline_logging, get_logger, get_pipeline_log_path
-from src import build_op_assets, curves_post_process, dataset_construction, simulate, training
+from src import build_op_assets, curves_post_process, dataset_construction, dataset_split_step, simulate, training
 
 PIPELINE_STEPS: tuple[tuple[str, Callable[[], None]], ...] = (
     ("simulate", simulate.main),
     ("build_op_assets", build_op_assets.main),
     ("curve_process", curves_post_process.main),
+    ("split", dataset_split_step.main),
     ("dataset", dataset_construction.main),
     ("training", training.main),
 )
@@ -49,7 +50,7 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "Resume from this stage instead of running the full pipeline. "
             f"Stages in order: {step_names}. "
-            "Choices: build_op_assets, curve_process, dataset, training "
+            "Choices: build_op_assets, curve_process, split, dataset, training "
             "(requires outputs from earlier stages; see docs/HowTo.md)."
         ),
     )
@@ -61,7 +62,7 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "Stop after this stage (inclusive). "
             f"Stages in order: {step_names}. "
-            "Useful to run through curve_process for KPI cut analysis before dataset/training."
+            "Useful to run through curve_process for KPI cut analysis, or --to-step split to rebuild the split only."
         ),
     )
     return parser.parse_args()

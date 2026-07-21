@@ -42,14 +42,14 @@ model:
   num_classes: 6
 
 training:
-  epochs: 150
-  patience: 20
+  epochs: 100
+  patience: 12
   batch_size: 16
   split_mode: operating_point
   seed: 42
-  training: 0.7
-  validation: 0.1
-  testing: 0.2
+  training: 0.7142857143
+  validation: 0.1428571429
+  testing: 0.1428571429
 
   # Fixed loss construction and output-decoding settings.
   pair_aware:
@@ -64,8 +64,8 @@ training:
     selection_output: class
 
 optuna:
-  n_trials: 50
-  study_name: nordic_v1
+  n_trials: 15
+  study_name: nordic
   hparams:
     hidden_dim:
       type: categorical

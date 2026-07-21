@@ -11,20 +11,16 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from modules import dataset_split
 from modules.actions_detection import run_actions_detection
 from modules.disconnections_detection import run_disconnections_detection
 from modules.kpi import run_kpi
 from modules.paths import (
     ACTIONS_DIR,
-    CONFIG_PATH,
-    DATASET_DIR,
     DISCONNECTIONS_DIR,
     KPI_DIR,
     OP_GRAPHS_DIR,
@@ -34,11 +30,6 @@ from modules.pipeline_logging import get_logger, log_step_banner
 from modules.simulation_results import load_successful_runs, resolve_results_csv
 
 ID_COLS = ["OP", "Contingency"]
-
-
-def load_config() -> dict:
-    with CONFIG_PATH.open("r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle) or {}
 
 
 def op_sort_key(path: Path) -> tuple[int, str]:
@@ -253,10 +244,7 @@ def apply_flag_mask_to_kpi(kpi_df: Optional[pd.DataFrame], flags_df: Optional[pd
 
 
 def build_combined_tables() -> dict[str, object]:
-    """Merge per-OP KPI/flag tables, write combined CSVs, and build the train/val/test split."""
-    config = load_config()
-    split_csv = DATASET_DIR / "train_val_test_split.csv"
-
+    """Merge per-OP KPI/flag tables and write combined CSVs."""
     combined_voltage = combine_frames("KPI_voltage_", KPI_DIR)
     combined_spower = combine_frames("KPI_spower_", KPI_DIR)
     combined_actions_voltage = combine_frames("actions_voltage_", ACTIONS_DIR)
@@ -280,12 +268,6 @@ def build_combined_tables() -> dict[str, object]:
     if kpi_voltage_path is None:
         raise FileNotFoundError("No per-OP KPI_voltage tables found under data/KPI/")
 
-    split_summary = dataset_split.build_dataset_split(
-        kpi_voltage_path,
-        output_csv=split_csv,
-        config=config,
-    )
-
     return {
         "actions_voltage": actions_voltage_path,
         "actions_spower": actions_spower_path,
@@ -293,8 +275,6 @@ def build_combined_tables() -> dict[str, object]:
         "disconnections_spower": disc_spower_path,
         "kpi_voltage": kpi_voltage_path,
         "kpi_spower": kpi_spower_path,
-        "split_csv": split_csv,
-        "_split_summary": split_summary,
     }
 
 
@@ -324,20 +304,9 @@ def main() -> None:
     logger.info("Step 3/5: Disconnections detection")
     run_disconnections_detection(successful_runs=successful_runs)
 
-    logger.info("Step 4/5: Combined KPI and flag tables")
-    logger.info("Step 5/5: Train/validation/test split")
+    logger.info("Step 4/4: Combined KPI and flag tables")
     outputs = build_combined_tables()
-    split_summary = outputs.pop("_split_summary")
 
-    logger.info(
-        "Split built. total=%d train=%d val=%d test=%d mode=%s seed=%d",
-        split_summary.total_examples,
-        split_summary.train_examples,
-        split_summary.validation_examples,
-        split_summary.test_examples,
-        split_summary.split_mode,
-        split_summary.seed,
-    )
     for name, path in outputs.items():
         logger.info("%s: %s", name, path)
 

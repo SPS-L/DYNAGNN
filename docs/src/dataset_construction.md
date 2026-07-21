@@ -62,4 +62,4 @@ Set `model.num_classes` to **`len(cuts) + 2`**.
 
 ## Notes
 
-Combined tables and `train_val_test_split.csv` are produced by [`curves_post_process.py`](curves_post_process.md). Re-run `main.py --from-step curve_process` when split settings change; re-run `main.py --from-step dataset` when KPI cuts change.
+Combined tables are produced by [`curves_post_process.py`](curves_post_process.md); `train_val_test_split.csv` is produced by [`dataset_split_step.py`](dataset_split_step.md). Re-run `main.py --from-step split --to-step split` when split settings change; re-run `main.py --from-step dataset` when KPI cuts change.

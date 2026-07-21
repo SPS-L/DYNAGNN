@@ -4,7 +4,7 @@ Creates **`train_val_test_split.csv`** from a table with `OP` and `Contingency` 
 
 ## Used by
 
-- `src/curves_post_process.py` (split built from combined `KPI_voltage.csv`)
+- `src/dataset_split_step.py` (split built from combined `KPI_voltage.csv`)
 
 ## Inputs
 
@@ -31,4 +31,4 @@ Creates **`train_val_test_split.csv`** from a table with `OP` and `Contingency` 
 
 ## Notes
 
-Re-run `main.py --from-step curve_process` to regenerate the split when `training.*` split settings change.
+Re-run `main.py --from-step split --to-step split` to regenerate the split when `training.*` split settings change.
