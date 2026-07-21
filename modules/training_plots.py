@@ -8,7 +8,8 @@ All figures are written under ``<training_dir>/<task>/plots/``
 ``loss_curve.png`` / ``score_curve.png`` are built from the winning Optuna
 trial's ``history.csv`` (under ``optuna_trials/trial_N/``), but the PNGs
 themselves are saved in the shared task ``plots/`` folder with the other
-diagnostics.
+diagnostics. The loss curve shows total loss plus classification,
+regression, gate, and ordinal components for train and validation.
 """
 from __future__ import annotations
 
@@ -49,25 +50,50 @@ def _ensure_plots_dir(training_dir: Path, task: str) -> Path:
 # Loss curve
 # ---------------------------------------------------------------------------
 
+# Distinct colors for every train/val series on the shared loss plot.
+_LOSS_CURVE_STYLES: tuple[tuple[str, str, str], ...] = (
+    ("train_total_loss", "train total", "#111111"),
+    ("train_classification_loss", "train classification", "#1f77b4"),
+    ("train_regression_loss", "train regression", "#2ca02c"),
+    ("train_gate_loss", "train gate", "#d62728"),
+    ("train_ordinal_loss", "train ordinal", "#9467bd"),
+    ("val_total_loss", "val total", "#7f7f7f"),
+    ("val_classification_loss", "val classification", "#17becf"),
+    ("val_regression_loss", "val regression", "#bcbd22"),
+    ("val_gate_loss", "val gate", "#ff7f0e"),
+    ("val_ordinal_loss", "val ordinal", "#e377c2"),
+)
+
+
 def plot_loss_curve(history_path: Path, plots_dir: Path, task: str) -> None:
-    """Read ``history.csv`` and write ``loss_curve.png`` (train + val if present)."""
+    """Read ``history.csv`` and write ``loss_curve.png`` (all components, train + val)."""
     plt = _safe_import_plt()
     if plt is None:
         logger.warning("matplotlib not available; skipping loss_curve.png")
         return
 
     df = pd.read_csv(history_path)
-    train_col = "train_total_loss"
-    val_col = "val_total_loss" if "val_total_loss" in df.columns else None
+    if "epoch" not in df.columns:
+        logger.warning("No epoch column in %s; skipping loss_curve.png", history_path)
+        return
 
-    fig, ax = plt.subplots(figsize=(7, 4))
-    ax.plot(df["epoch"], df[train_col], label="train", color="#1f77b4")
-    if val_col and df[val_col].notna().any():
-        ax.plot(df["epoch"], df[val_col], label="val", color="#ff7f0e")
-    ax.set_title(f"{task.capitalize()} — total loss curve", fontsize=14)
+    fig, ax = plt.subplots(figsize=(9, 5))
+    plotted_any = False
+    for col, label, color in _LOSS_CURVE_STYLES:
+        if col not in df.columns or not df[col].notna().any():
+            continue
+        ax.plot(df["epoch"], df[col], label=label, color=color, linestyle="-", linewidth=1.6)
+        plotted_any = True
+
+    if not plotted_any:
+        plt.close(fig)
+        logger.warning("No loss columns in %s; skipping loss_curve.png", history_path)
+        return
+
+    ax.set_title(f"{task.capitalize()} — loss curves", fontsize=14)
     ax.set_xlabel("Epoch", fontsize=12)
     ax.set_ylabel("Loss", fontsize=12)
-    ax.legend(fontsize=11)
+    ax.legend(fontsize=9, ncol=2)
     ax.grid(axis="y", alpha=0.25)
     plt.tight_layout()
     out = plots_dir / "loss_curve.png"
