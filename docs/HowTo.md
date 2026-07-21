@@ -98,17 +98,7 @@ These keys are **not** Optuna-tuned. They fix how the training objective is buil
 
 Each forward pass produces three heads: class logits, an inactive (class-0) gate logit, and a standardized log-KPI prediction. The scalar loss minimized by SGD is
 
-$$
-\mathcal{L}
-=
-w_{\mathrm{cls}}\,\mathcal{L}_{\mathrm{CE}}
-+
-w_{\mathrm{reg}}\,\mathcal{L}_{\mathrm{Huber}}
-+
-w_{\mathrm{gate}}\,\mathcal{L}_{\mathrm{BCE}}
-+
-w_{\mathrm{ord}}\,\mathcal{L}_{\mathrm{CDF}}
-$$
+$$ \mathcal{L} = w_{\mathrm{cls}}\,\mathcal{L}_{\mathrm{CE}} + w_{\mathrm{reg}}\,\mathcal{L}_{\mathrm{Huber}} + w_{\mathrm{gate}}\,\mathcal{L}_{\mathrm{BCE}} + w_{\mathrm{ord}}\,\mathcal{L}_{\mathrm{CDF}} $$
 
 where the config keys map as:
 
@@ -358,13 +348,11 @@ Power factor is preserved by applying the same scale to $P$ and $Q$.
 
 For load $i$ in area $A(i) \in \{N, C, S\}$:
 
-$$s_i = g \cdot a_{A(i)} \cdot f_i, \qquad
-\Delta P_i = \Delta Q_i = s_i - 1.$$
+$$ s_i = g \cdot a_{A(i)} \cdot f_i, \qquad \Delta P_i = \Delta Q_i = s_i - 1. $$
 
 Dynawo applies the variation as
 
-$$P_i = P^0_i\,(1 + \Delta P_i) = P^0_i\, s_i, \qquad
-Q_i = Q^0_i\,(1 + \Delta Q_i) = Q^0_i\, s_i.$$
+$$ P_i = P^0_i\,(1 + \Delta P_i) = P^0_i\, s_i, \qquad Q_i = Q^0_i\,(1 + \Delta Q_i) = Q^0_i\, s_i. $$
 
 The **target total active load** before the equilibrium run is
 
