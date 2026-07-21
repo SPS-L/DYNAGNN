@@ -96,7 +96,7 @@ Example (for **bus**, use **Type** `bus` in both cases; **Fault name** is a `bus
 
 These keys are **not** Optuna-tuned. They fix how the training objective is built and how predictions are decoded / selected.
 
-Each forward pass produces three heads: class logits, an inactive (class-0) gate logit, and a standardized log-KPI prediction. The scalar loss minimized by SGD is
+Each forward pass produces three heads: class logits, an inactive (class-0) gate logit, and a standardized log-KPI prediction. Training minimizes the following scalar loss with **AdamW** (gradient-based optimization on mini-batches):
 
 $$ \Large \mathcal{L} = w_{\mathrm{cls}} \cdot \mathcal{L}_{\mathrm{CE}} + w_{\mathrm{reg}} \cdot \mathcal{L}_{\mathrm{Huber}} + w_{\mathrm{gate}} \cdot \mathcal{L}_{\mathrm{BCE}} + w_{\mathrm{ord}} \cdot \mathcal{L}_{\mathrm{CDF}} $$
 

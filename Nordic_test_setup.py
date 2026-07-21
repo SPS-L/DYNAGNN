@@ -55,8 +55,8 @@ training:
   pair_aware:
     classification_weight: 1.0
     regression_weight: 0.30
-    inactive_gate_weight: 0.15
-    ordinal_weight: 0.15
+    inactive_gate_weight: 0.2
+    ordinal_weight: 0.1
     class_weight_mode: inverse
     gate_pos_weight_mode: balanced
     gate_threshold: 0.50
