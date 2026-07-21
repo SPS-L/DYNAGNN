@@ -98,7 +98,7 @@ These keys are **not** Optuna-tuned. They fix how the training objective is buil
 
 Each forward pass produces three heads: class logits, an inactive (class-0) gate logit, and a standardized log-KPI prediction. The scalar loss minimized by SGD is
 
-$$ \mathcal{L} = w_{\mathrm{cls}}\,\mathcal{L}_{\mathrm{CE}} + w_{\mathrm{reg}}\,\mathcal{L}_{\mathrm{Huber}} + w_{\mathrm{gate}}\,\mathcal{L}_{\mathrm{BCE}} + w_{\mathrm{ord}}\,\mathcal{L}_{\mathrm{CDF}} $$
+$$ \Large \mathcal{L} = w_{\mathrm{cls}} \cdot \mathcal{L}_{\mathrm{CE}} + w_{\mathrm{reg}} \cdot \mathcal{L}_{\mathrm{Huber}} + w_{\mathrm{gate}} \cdot \mathcal{L}_{\mathrm{BCE}} + w_{\mathrm{ord}} \cdot \mathcal{L}_{\mathrm{CDF}} $$
 
 where the config keys map as:
 
