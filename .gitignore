@@ -125,7 +125,7 @@ examples/**/data/*
 !examples/**/data/inputs/**
 
 # Ignore operating-point case folders under examples (can be modified/generated locally)
-!examples/**/data/inputs/operating_point_*/
+examples/**/data/inputs/operating_point_*/
 
 # Inference outputs inside bundled operating-point folders
 examples/**/inputs/**/dynagnn_output/
