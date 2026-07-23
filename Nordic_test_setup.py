@@ -34,9 +34,9 @@ kpi:
   step_sec: 1.0
   class_bins:
     voltage:
-      cuts: [1e-6, 2.25e-5, 3e-4, 5.625e-4]  # 5 KPI classes (0-4) + 1 flag class => model.num_classes: 6
+      cuts: [1e-06, 1.4999999999999999e-05, 5.9999999999999995e-05, 0.000225] # fair log-ish spacing; rebuild Dataset_*.csv to train on these
     spower:
-      cuts: [1e-6, 2.25e-5, 3e-4, 5.625e-4]
+      cuts: [1e-06, 2.9999999999999997e-05, 0.00011999999999999999, 0.00045]
 
 model:
   num_classes: 6
@@ -49,7 +49,7 @@ training:
   seed: 42
   training: 0.7142857143
   validation: 0.1428571429
-  testing: 0.1428571429
+  testing: 0.1428571429 
 
   # Fixed loss construction and output-decoding settings.
   pair_aware:
