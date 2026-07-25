@@ -43,10 +43,14 @@ training:
     classification_weight: 
     regression_weight:  
     inactive_gate_weight: 
+    flag_gate_weight:  # BCE for flag class K-1 (disconnected/controlled)
     ordinal_weight: 
     class_weight_mode: 
     gate_pos_weight_mode: 
+    flag_gate_pos_weight_mode:  # none | balanced
+    flag_pos_weight_multiplier:  # scales balanced flag-gate pos_weight
     gate_threshold:
+    flag_gate_threshold:  # decode threshold for flag class K-1
     epsilon: 
     selection_output: 
 

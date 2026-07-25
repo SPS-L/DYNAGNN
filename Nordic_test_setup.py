@@ -56,10 +56,14 @@ training:
     classification_weight: 1.0
     regression_weight: 0.30
     inactive_gate_weight: 0.2
+    flag_gate_weight: 0.50
     ordinal_weight: 0.1
     class_weight_mode: inverse
     gate_pos_weight_mode: balanced
+    flag_gate_pos_weight_mode: balanced
+    flag_pos_weight_multiplier: 1.0
     gate_threshold: 0.50
+    flag_gate_threshold: 0.35
     epsilon: 1.0e-10
     selection_output: class
 

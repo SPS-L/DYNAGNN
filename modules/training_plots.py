@@ -55,12 +55,14 @@ _LOSS_CURVE_STYLES: tuple[tuple[str, str, str], ...] = (
     ("train_total_loss", "train total", "#111111"),
     ("train_classification_loss", "train classification", "#1f77b4"),
     ("train_regression_loss", "train regression", "#2ca02c"),
-    ("train_gate_loss", "train gate", "#d62728"),
+    ("train_gate_loss", "train inactive gate", "#d62728"),
+    ("train_flag_gate_loss", "train flag gate", "#8c564b"),
     ("train_ordinal_loss", "train ordinal", "#9467bd"),
     ("val_total_loss", "val total", "#7f7f7f"),
     ("val_classification_loss", "val classification", "#17becf"),
     ("val_regression_loss", "val regression", "#bcbd22"),
-    ("val_gate_loss", "val gate", "#ff7f0e"),
+    ("val_gate_loss", "val inactive gate", "#ff7f0e"),
+    ("val_flag_gate_loss", "val flag gate", "#c49c94"),
     ("val_ordinal_loss", "val ordinal", "#e377c2"),
 )
 

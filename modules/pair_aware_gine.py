@@ -7,12 +7,13 @@ The GNN is the primary predictor. It receives graph topology and physical
 features, explicit target-component identity, contingency identity/location,
 and optional operating-point context.
 
-The classification head learns all configured classes directly:
-- KPI-derived activity levels (classes 0 .. num_classes-2);
-- flag class (class num_classes-1): disconnected or controlled component.
+The model uses a hierarchical output:
+- a severity head for KPI-derived activity classes 0 .. num_classes-2;
+- a binary flag-class protection gate for disconnected or controlled components (class K-1);
+- the existing class-0 inactive gate inside the non-flag branch.
 
-The flag class is never overwritten deterministically during evaluation.
-No historical KPI/class prior is used.
+This keeps the flag class (K-1) separate from the ordinal severity ladder while learning all
+decisions directly from graph, target, event, and operating-point features.
 """
 from __future__ import annotations
 
@@ -57,6 +58,7 @@ class PairAwareLossWeights:
     classification: float = 1.0
     regression: float = 0.30
     inactive_gate: float = 0.20
+    flag_gate: float = 0.50
     ordinal_cdf: float = 0.10
 
 
@@ -180,7 +182,10 @@ class PairAwareGINE(nn.Module):
             nn.ReLU(),
             nn.Dropout(hparams.dropout),
         )
-        self.class_head = nn.Linear(hparams.decoder_hidden_dim, self.num_classes)
+        self.class_head = nn.Linear(
+            hparams.decoder_hidden_dim, self.num_classes - 1
+        )
+        self.flag_head = nn.Linear(hparams.decoder_hidden_dim, 1)
         self.inactive_head = nn.Linear(hparams.decoder_hidden_dim, 1)
         self.regression_head = nn.Linear(hparams.decoder_hidden_dim, 1)
 
@@ -278,6 +283,7 @@ class PairAwareGINE(nn.Module):
         shared = self.shared_decoder(torch.cat(parts, dim=1))
         return {
             "class_logits": self.class_head(shared),
+            "flag_logit": self.flag_head(shared).squeeze(1),
             "inactive_logit": self.inactive_head(shared).squeeze(1),
             "log_kpi_std": self.regression_head(shared).squeeze(1),
         }
@@ -378,6 +384,7 @@ def classification_metrics(y_true: np.ndarray, y_pred: np.ndarray, num_classes: 
     return metrics
 
 def selection_score(metrics: dict) -> float:
+    """General six-class score used for reporting."""
     return float(
         0.40 * metrics["balanced_accuracy"]
         + 0.30 * metrics["macro_f1"]
@@ -386,10 +393,19 @@ def selection_score(metrics: dict) -> float:
     )
 
 
-def _ordinal_cdf_loss(logits: torch.Tensor, y: torch.Tensor, num_classes: int) -> torch.Tensor:
+def _ordinal_cdf_loss(
+    logits: torch.Tensor,
+    y: torch.Tensor,
+    severity_classes: int,
+) -> torch.Tensor:
+    """Ordinal CDF loss for KPI severity classes only, excluding the flag class."""
     probabilities = torch.softmax(logits, dim=1)
     pred_cdf = probabilities.cumsum(dim=1)[:, :-1]
-    true_cdf = F.one_hot(y, num_classes=int(num_classes)).float().cumsum(dim=1)[:, :-1]
+    true_cdf = (
+        F.one_hot(y, num_classes=int(severity_classes))
+        .float()
+        .cumsum(dim=1)[:, :-1]
+    )
     return torch.abs(pred_cdf - true_cdf).mean()
 
 
@@ -402,7 +418,10 @@ def _classes_from_log_prediction(
     epsilon: float,
 ) -> np.ndarray:
     log_values = prediction_std * float(log_std) + float(log_mean)
-    values = np.maximum(np.power(10.0, np.clip(log_values, -30.0, 30.0)) - float(epsilon), 0.0)
+    values = np.maximum(
+        np.power(10.0, np.clip(log_values, -30.0, 30.0)) - float(epsilon),
+        0.0,
+    )
     return np.searchsorted(cuts, values, side="left").astype(np.int64)
 
 
@@ -426,13 +445,41 @@ def _move_batch(data, device: torch.device):
     return data.to(device, *keys)
 
 
-def _decode_gated(logits: torch.Tensor, gate_logit: torch.Tensor, threshold: float) -> torch.Tensor:
-    inactive_probability = torch.sigmoid(gate_logit)
-    active_pred = logits[:, 1:].argmax(dim=1) + 1
+def _decode_flag(
+    severity_logits: torch.Tensor,
+    flag_logit: torch.Tensor,
+    flag_threshold: float,
+    flag_class: int,
+) -> torch.Tensor:
+    severity_pred = severity_logits.argmax(dim=1)
+    flag_probability = torch.sigmoid(flag_logit)
     return torch.where(
-        inactive_probability >= float(threshold),
+        flag_probability >= float(flag_threshold),
+        torch.full_like(severity_pred, int(flag_class)),
+        severity_pred,
+    )
+
+
+def _decode_gated(
+    severity_logits: torch.Tensor,
+    inactive_logit: torch.Tensor,
+    flag_logit: torch.Tensor,
+    inactive_threshold: float,
+    flag_threshold: float,
+    flag_class: int,
+) -> torch.Tensor:
+    flag_probability = torch.sigmoid(flag_logit)
+    inactive_probability = torch.sigmoid(inactive_logit)
+    active_pred = severity_logits[:, 1:].argmax(dim=1) + 1
+    severity_pred = torch.where(
+        inactive_probability >= float(inactive_threshold),
         torch.zeros_like(active_pred),
         active_pred,
+    )
+    return torch.where(
+        flag_probability >= float(flag_threshold),
+        torch.full_like(severity_pred, int(flag_class)),
+        severity_pred,
     )
 
 
@@ -456,12 +503,14 @@ def _run_epoch(
     optimizer: Optional[torch.optim.Optimizer],
     class_weights: Optional[torch.Tensor],
     inactive_pos_weight: Optional[torch.Tensor],
+    flag_pos_weight: Optional[torch.Tensor],
     loss_weights: PairAwareLossWeights,
     log_mean: float,
     log_std: float,
     cuts: np.ndarray,
     epsilon: float,
     gate_threshold: float,
+    flag_gate_threshold: float,
     target_mask_attr: str,
     num_classes: int,
     collect_predictions: bool = False,
@@ -469,10 +518,17 @@ def _run_epoch(
     train_mode = optimizer is not None
     model.train() if train_mode else model.eval()
 
-    sums = {"total": 0.0, "classification": 0.0, "regression": 0.0, "gate": 0.0, "ordinal": 0.0}
-    n_supervised = 0
-
     flag_cls = flag_class_index(num_classes)
+    severity_classes = flag_cls
+    sums = {
+        "total": 0.0,
+        "classification": 0.0,
+        "regression": 0.0,
+        "gate": 0.0,
+        "flag_gate": 0.0,
+        "ordinal": 0.0,
+    }
+    n_supervised = 0
 
     full_true_chunks: list[np.ndarray] = []
     full_class_chunks: list[np.ndarray] = []
@@ -496,31 +552,58 @@ def _run_epoch(
             if not bool(valid_mask.any()):
                 continue
 
-            logits = output["class_logits"][valid_mask]
-            gate_logit = output["inactive_logit"][valid_mask]
+            severity_logits = output["class_logits"][valid_mask]
+            flag_logit = output["flag_logit"][valid_mask]
+            inactive_logit = output["inactive_logit"][valid_mask]
             reg_prediction = output["log_kpi_std"][valid_mask]
             y = y_all[valid_mask]
             log_target = log_target_all[valid_mask]
 
-            classification_loss = F.cross_entropy(logits, y, weight=class_weights)
-            gate_target = (y == 0).float()
-            gate_loss = F.binary_cross_entropy_with_logits(
-                gate_logit, gate_target, pos_weight=inactive_pos_weight
+            flag_target = (y == flag_cls).float()
+            flag_loss = F.binary_cross_entropy_with_logits(
+                flag_logit,
+                flag_target,
+                pos_weight=flag_pos_weight,
             )
-            ordinal_loss = _ordinal_cdf_loss(logits, y, num_classes)
 
-            # The flag class has no KPI target by design; regression is learned only
-            # where a finite KPI exists (normally activity classes 0..num_classes-2).
-            finite_reg = torch.isfinite(log_target)
+            severity_mask = y < flag_cls
+            if bool(severity_mask.any()):
+                severity_y = y[severity_mask]
+                classification_loss = F.cross_entropy(
+                    severity_logits[severity_mask],
+                    severity_y,
+                    weight=class_weights,
+                )
+                gate_target = (severity_y == 0).float()
+                gate_loss = F.binary_cross_entropy_with_logits(
+                    inactive_logit[severity_mask],
+                    gate_target,
+                    pos_weight=inactive_pos_weight,
+                )
+                ordinal_loss = _ordinal_cdf_loss(
+                    severity_logits[severity_mask],
+                    severity_y,
+                    severity_classes,
+                )
+            else:
+                classification_loss = severity_logits.new_zeros(())
+                gate_loss = severity_logits.new_zeros(())
+                ordinal_loss = severity_logits.new_zeros(())
+
+            finite_reg = severity_mask & torch.isfinite(log_target)
             regression_loss = (
-                F.smooth_l1_loss(reg_prediction[finite_reg], log_target[finite_reg])
+                F.smooth_l1_loss(
+                    reg_prediction[finite_reg], log_target[finite_reg]
+                )
                 if bool(finite_reg.any())
-                else logits.new_zeros(())
+                else severity_logits.new_zeros(())
             )
+
             total_loss = (
                 loss_weights.classification * classification_loss
                 + loss_weights.regression * regression_loss
                 + loss_weights.inactive_gate * gate_loss
+                + loss_weights.flag_gate * flag_loss
                 + loss_weights.ordinal_cdf * ordinal_loss
             )
 
@@ -536,25 +619,43 @@ def _run_epoch(
             sums["classification"] += float(classification_loss.detach().cpu()) * n
             sums["regression"] += float(regression_loss.detach().cpu()) * n
             sums["gate"] += float(gate_loss.detach().cpu()) * n
+            sums["flag_gate"] += float(flag_loss.detach().cpu()) * n
             sums["ordinal"] += float(ordinal_loss.detach().cpu()) * n
 
-            detached_logits = logits.detach()
-            class_pred = detached_logits.argmax(dim=1)
-            gated_pred = _decode_gated(detached_logits, gate_logit.detach(), gate_threshold)
-            log_pred_np = _classes_from_log_prediction(
+            detached_severity = severity_logits.detach()
+            detached_flag = flag_logit.detach()
+            detached_inactive = inactive_logit.detach()
+
+            class_pred = _decode_flag(
+                detached_severity,
+                detached_flag,
+                flag_gate_threshold,
+                flag_cls,
+            )
+            gated_pred = _decode_gated(
+                detached_severity,
+                detached_inactive,
+                detached_flag,
+                gate_threshold,
+                flag_gate_threshold,
+                flag_cls,
+            )
+
+            log_base_np = _classes_from_log_prediction(
                 reg_prediction.detach().cpu().numpy(),
                 log_mean=log_mean,
                 log_std=log_std,
                 cuts=cuts,
                 epsilon=epsilon,
             )
-            # The regression branch can only discretize KPI activity classes. For the
-            # flag-class decision, defer to the learned classifier rather than any
-            # deterministic override.
-            class_pred_np = class_pred.cpu().numpy()
-            log_pred_np[class_pred_np == flag_cls] = flag_cls
+            flag_probability_np = torch.sigmoid(detached_flag).cpu().numpy()
+            log_pred_np = log_base_np.copy()
+            log_pred_np[
+                flag_probability_np >= float(flag_gate_threshold)
+            ] = flag_cls
 
             y_np = y.detach().cpu().numpy()
+            class_pred_np = class_pred.cpu().numpy()
             gated_pred_np = gated_pred.cpu().numpy()
             full_true_chunks.append(y_np)
             full_class_chunks.append(class_pred_np)
@@ -575,7 +676,24 @@ def _run_epoch(
                 target_graph_all = data.batch[target_mask].detach().cpu().numpy()
                 target_token_all = data.node_token[target_mask].detach().cpu().numpy()
                 valid_indices = np.flatnonzero(valid_mask.detach().cpu().numpy())
-                probabilities = torch.softmax(detached_logits, dim=1).cpu().numpy()
+                severity_probabilities = torch.softmax(
+                    detached_severity, dim=1
+                ).cpu().numpy()
+                flag_probabilities = torch.sigmoid(
+                    detached_flag
+                ).cpu().numpy()
+                inactive_probabilities = torch.sigmoid(
+                    detached_inactive
+                ).cpu().numpy()
+                severity_class_np = detached_severity.argmax(dim=1).cpu().numpy()
+                active_severity_np = (
+                    detached_severity[:, 1:].argmax(dim=1).cpu().numpy() + 1
+                )
+                gated_base_np = np.where(
+                    inactive_probabilities >= float(gate_threshold),
+                    0,
+                    active_severity_np,
+                ).astype(np.int64)
 
                 for local_idx, target_idx in enumerate(valid_indices):
                     graph_idx = int(target_graph_all[target_idx])
@@ -588,6 +706,21 @@ def _run_epoch(
                         "contingency": events[graph_idx],
                         "node_token": int(target_token_all[target_idx]),
                         "true_class": true_class,
+                        "flag_probability": float(
+                            flag_probabilities[local_idx]
+                        ),
+                        "inactive_probability": float(
+                            inactive_probabilities[local_idx]
+                        ),
+                        "base_class_prediction": int(
+                            severity_class_np[local_idx]
+                        ),
+                        "base_gated_prediction": int(
+                            gated_base_np[local_idx]
+                        ),
+                        "base_log_kpi_prediction": int(
+                            log_base_np[local_idx]
+                        ),
                         "class_prediction": class_value,
                         "gated_prediction": gated_value,
                         "log_kpi_prediction": log_value,
@@ -595,8 +728,13 @@ def _run_epoch(
                         "gated_error_offset": gated_value - true_class,
                         "log_kpi_error_offset": log_value - true_class,
                     }
-                    for cls in range(num_classes):
-                        row[f"class_probability_{cls}"] = float(probabilities[local_idx, cls])
+                    for cls in range(severity_classes):
+                        row[f"class_probability_{cls}"] = float(
+                            severity_probabilities[local_idx, cls]
+                        )
+                    row[f"class_probability_{flag_cls}"] = float(
+                        flag_probabilities[local_idx]
+                    )
                     prediction_rows.append(row)
 
     def _cat(chunks: list[np.ndarray]) -> np.ndarray:
@@ -606,21 +744,48 @@ def _run_epoch(
     activity_true = _cat(activity_true_chunks)
     result = {
         "loss": {key: _safe_div(value, n_supervised) for key, value in sums.items()},
-        "full_class_class": classification_metrics(full_true, _cat(full_class_chunks), num_classes),
-        "full_class_gated": classification_metrics(full_true, _cat(full_gated_chunks), num_classes),
-        "full_class_log_kpi": classification_metrics(full_true, _cat(full_log_chunks), num_classes),
-        # Secondary activity-only view. Prediction of flag class remains an error.
-        "activity_class": classification_metrics(activity_true, _cat(activity_class_chunks), num_classes),
-        "activity_gated": classification_metrics(activity_true, _cat(activity_gated_chunks), num_classes),
-        "activity_log_kpi": classification_metrics(activity_true, _cat(activity_log_chunks), num_classes),
+        "full_class_class": classification_metrics(
+            full_true, _cat(full_class_chunks), num_classes
+        ),
+        "full_class_gated": classification_metrics(
+            full_true, _cat(full_gated_chunks), num_classes
+        ),
+        "full_class_log_kpi": classification_metrics(
+            full_true, _cat(full_log_chunks), num_classes
+        ),
+        "activity_class": classification_metrics(
+            activity_true, _cat(activity_class_chunks), num_classes
+        ),
+        "activity_gated": classification_metrics(
+            activity_true, _cat(activity_gated_chunks), num_classes
+        ),
+        "activity_log_kpi": classification_metrics(
+            activity_true, _cat(activity_log_chunks), num_classes
+        ),
     }
-    # Backward-compatible aliases; these are learned full-class metrics.
+    for key in ("full_class_class", "full_class_gated", "full_class_log_kpi"):
+        metrics = result[key]
+        flag_recall = float(metrics["class_recall"][flag_cls])
+        flag_precision = float(metrics["class_precision"][flag_cls])
+        flag_f1 = float(metrics["class_f1"][flag_cls])
+        metrics["flag_recall"] = flag_recall
+        metrics["flag_precision"] = flag_precision
+        metrics["flag_f1"] = flag_f1
+        metrics["protection_selection_score"] = float(
+            0.30 * metrics["balanced_accuracy"]
+            + 0.25 * metrics["macro_f1"]
+            + 0.15 * metrics["accuracy"]
+            + 0.10 * metrics["within_one_accuracy"]
+            + 0.20 * flag_recall
+        )
+
     result["combined_class"] = result["full_class_class"]
     result["combined_gated"] = result["full_class_gated"]
     result["combined_log_kpi"] = result["full_class_log_kpi"]
     if collect_predictions:
         result["predictions"] = prediction_rows
     return result
+
 
 def compute_class_weights(
     loader,
@@ -629,14 +794,26 @@ def compute_class_weights(
     target_mask_attr: str,
     num_classes: int,
 ) -> Optional[torch.Tensor]:
+    """Weights for severity classes 0..num_classes-2."""
+    mode = str(mode).strip().lower()
     if mode == "none":
         return None
-    counts = torch.zeros(num_classes, dtype=torch.float64)
+    severity_classes = flag_class_index(num_classes)
+    counts = torch.zeros(severity_classes, dtype=torch.float64)
     for data in loader:
         y = data.y_class[getattr(data, target_mask_attr)]
-        y = y[(y >= 0) & (y < num_classes)]
-        counts += torch.bincount(y, minlength=num_classes).double()
-    weights = torch.sqrt(counts.sum() / counts.clamp_min(1.0))
+        y = y[(y >= 0) & (y < severity_classes)]
+        counts += torch.bincount(y, minlength=severity_classes).double()
+    inverse = counts.sum() / counts.clamp_min(1.0)
+    if mode == "sqrt_inverse":
+        weights = torch.sqrt(inverse)
+    elif mode == "inverse":
+        weights = inverse
+    else:
+        raise ValueError(
+            f"Unsupported class_weight_mode={mode!r}; expected none, "
+            "sqrt_inverse, or inverse"
+        )
     weights = weights / weights.mean()
     return weights.float().to(device)
 
@@ -648,16 +825,56 @@ def compute_gate_pos_weight(
     target_mask_attr: str,
     num_classes: int,
 ) -> Optional[torch.Tensor]:
+    """Positive weight for class 0 versus classes 1..4, excluding the flag class."""
+    mode = str(mode).strip().lower()
     if mode == "none":
         return None
+    if mode != "balanced":
+        raise ValueError(
+            f"Unsupported gate_pos_weight_mode={mode!r}; expected none or balanced"
+        )
+    flag_cls = flag_class_index(num_classes)
     inactive = 0
     active = 0
     for data in loader:
         y = data.y_class[getattr(data, target_mask_attr)]
-        y = y[(y >= 0) & (y < num_classes)]
+        y = y[(y >= 0) & (y < flag_cls)]
         inactive += int((y == 0).sum().item())
         active += int((y != 0).sum().item())
-    return torch.tensor([_safe_div(active, max(inactive, 1))], dtype=torch.float32, device=device)
+    return torch.tensor(
+        [_safe_div(active, max(inactive, 1))],
+        dtype=torch.float32,
+        device=device,
+    )
+
+
+def compute_flag_pos_weight(
+    loader,
+    mode: str,
+    device: torch.device,
+    target_mask_attr: str,
+    num_classes: int,
+    multiplier: float = 1.0,
+) -> Optional[torch.Tensor]:
+    """Positive weight for the flag class (K-1) versus severity classes 0..K-2."""
+    mode = str(mode).strip().lower()
+    if mode == "none":
+        return None
+    if mode != "balanced":
+        raise ValueError(
+            f"Unsupported flag_gate_pos_weight_mode={mode!r}; "
+            "expected none or balanced"
+        )
+    flag_cls = flag_class_index(num_classes)
+    positive = 0
+    negative = 0
+    for data in loader:
+        y = data.y_class[getattr(data, target_mask_attr)]
+        y = y[(y >= 0) & (y < num_classes)]
+        positive += int((y == flag_cls).sum().item())
+        negative += int((y != flag_cls).sum().item())
+    value = _safe_div(negative, max(positive, 1)) * float(multiplier)
+    return torch.tensor([value], dtype=torch.float32, device=device)
 
 
 def _metrics_frame(metrics: dict) -> pd.DataFrame:
@@ -824,6 +1041,14 @@ def _log_test_breakdown(
         recall = float(metrics["class_accuracy"][cls])
         per_class.append(f"{cls}:{correct}/{support} ({recall:.3f})")
     logger.info("Per-class recall: %s", "  ".join(per_class))
+    flag_cls = num_classes - 1
+    if int(metrics["class_support"][flag_cls]) > 0:
+        logger.info(
+            "Flag-class protection: recall=%.4f precision=%.4f F1=%.4f",
+            float(metrics["class_recall"][flag_cls]),
+            float(metrics["class_precision"][flag_cls]),
+            float(metrics["class_f1"][flag_cls]),
+        )
 
     # Compact offset summary: exact / within-1 / under / over
     logger.info(
@@ -845,6 +1070,33 @@ def _log_test_breakdown(
     if offset_bits:
         logger.info("Non-zero offset rates: %s", "  ".join(offset_bits))
 
+def _save_validation_outputs(
+    artifact_dir: Path,
+    result: dict,
+    selected_output: str,
+    num_classes: int,
+    flag_gate_threshold: float,
+) -> Path:
+    validation_dir = artifact_dir / "validation_outputs"
+    validation_dir.mkdir(parents=True, exist_ok=True)
+    predictions = pd.DataFrame(result.get("predictions", []))
+    path = validation_dir / "validation_predictions.csv"
+    predictions.to_csv(path, index=False)
+    metrics = result[f"full_class_{selected_output}"]
+    (validation_dir / "validation_metrics_at_training_threshold.json").write_text(
+        json.dumps(
+            {
+                "selected_output": selected_output,
+                "flag_gate_threshold": float(flag_gate_threshold),
+                "full_class": metrics,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def run_pair_aware_training(
     *,
     task: str,
@@ -862,12 +1114,15 @@ def run_pair_aware_training(
     cuts: np.ndarray,
     epsilon: float,
     gate_threshold: float,
+    flag_gate_threshold: float,
     epochs: int,
     patience: int,
     fixed_epochs: Optional[int],
     selection_output: Optional[str],
     class_weight_mode: str,
     gate_pos_weight_mode: str,
+    flag_gate_pos_weight_mode: str,
+    flag_pos_weight_multiplier: float,
     num_classes: int,
     logger: logging.Logger,
     trial=None,
@@ -882,14 +1137,29 @@ def run_pair_aware_training(
         hparams=hparams,
         num_classes=num_classes,
     ).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=hparams.lr, weight_decay=hparams.weight_decay)
-    scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=4, min_lr=1.0e-6)
-    class_weights = compute_class_weights(train_loader, class_weight_mode, device, target_mask_attr, num_classes)
-    inactive_pos_weight = compute_gate_pos_weight(train_loader, gate_pos_weight_mode, device, target_mask_attr, num_classes)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=hparams.lr, weight_decay=hparams.weight_decay
+    )
+    scheduler = ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=4, min_lr=1.0e-6
+    )
+    class_weights = compute_class_weights(
+        train_loader, class_weight_mode, device, target_mask_attr, num_classes
+    )
+    inactive_pos_weight = compute_gate_pos_weight(
+        train_loader, gate_pos_weight_mode, device, target_mask_attr, num_classes
+    )
+    flag_pos_weight = compute_flag_pos_weight(
+        train_loader,
+        flag_gate_pos_weight_mode,
+        device,
+        target_mask_attr,
+        num_classes,
+        multiplier=flag_pos_weight_multiplier,
+    )
 
     trial_label = None if trial is None else int(trial.number)
     if trial_label is None:
-        # Standalone / final-eval style: log full setup once.
         logger.info("Device: %s | num_classes=%d", device, num_classes)
         logger.info("HParams: %s", asdict(hparams))
         logger.info("Loss weights: %s", asdict(loss_weights))
@@ -899,9 +1169,12 @@ def run_pair_aware_training(
         )
         logger.info(
             "Inactive gate pos_weight: %s",
-            None
-            if inactive_pos_weight is None
-            else [round(float(v), 4) for v in inactive_pos_weight.detach().cpu().tolist()],
+            None if inactive_pos_weight is None else [round(float(v), 4) for v in inactive_pos_weight.detach().cpu().tolist()],
+        )
+        logger.info(
+            "Flag-gate pos_weight: %s | threshold=%.3f",
+            None if flag_pos_weight is None else [round(float(v), 4) for v in flag_pos_weight.detach().cpu().tolist()],
+            float(flag_gate_threshold),
         )
     else:
         logger.info(
@@ -929,16 +1202,21 @@ def run_pair_aware_training(
             optimizer=optimizer,
             class_weights=class_weights,
             inactive_pos_weight=inactive_pos_weight,
+            flag_pos_weight=flag_pos_weight,
             loss_weights=loss_weights,
             log_mean=log_mean,
             log_std=log_std,
             cuts=cuts,
             epsilon=epsilon,
             gate_threshold=gate_threshold,
+            flag_gate_threshold=flag_gate_threshold,
             target_mask_attr=target_mask_attr,
             num_classes=num_classes,
         )
-        row = {"epoch": epoch, **{f"train_{k}_loss": v for k, v in train_result["loss"].items()}}
+        row = {
+            "epoch": epoch,
+            **{f"train_{k}_loss": v for k, v in train_result["loss"].items()},
+        }
 
         if validation_loader is not None:
             val_result = _run_epoch(
@@ -948,25 +1226,26 @@ def run_pair_aware_training(
                 optimizer=None,
                 class_weights=class_weights,
                 inactive_pos_weight=inactive_pos_weight,
+                flag_pos_weight=flag_pos_weight,
                 loss_weights=loss_weights,
                 log_mean=log_mean,
                 log_std=log_std,
                 cuts=cuts,
                 epsilon=epsilon,
                 gate_threshold=gate_threshold,
+                flag_gate_threshold=flag_gate_threshold,
                 target_mask_attr=target_mask_attr,
                 num_classes=num_classes,
             )
             candidates = {
-                "class": val_result["full_class_class"]["selection_score"],
-                "gated": val_result["full_class_gated"]["selection_score"],
-                "log_kpi": val_result["full_class_log_kpi"]["selection_score"],
+                "class": val_result["full_class_class"]["protection_selection_score"],
+                "gated": val_result["full_class_gated"]["protection_selection_score"],
+                "log_kpi": val_result["full_class_log_kpi"]["protection_selection_score"],
             }
             selected = selection_output or max(candidates, key=candidates.get)
             if selected not in candidates:
                 raise ValueError(f"Unsupported selection_output: {selected!r}")
             score = float(candidates[selected])
-            # Record val loss for diagnostics / loss_curve.png (not used for selection).
             for key, value in val_result["loss"].items():
                 row[f"val_{key}_loss"] = float(value)
             for name, value in candidates.items():
@@ -980,15 +1259,19 @@ def run_pair_aware_training(
                 best_score = score
                 best_epoch = epoch
                 best_output = selected
-                best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+                best_state = {
+                    key: value.detach().cpu().clone()
+                    for key, value in model.state_dict().items()
+                }
                 stale = 0
                 improved = True
             elif fixed_epochs is None:
                 stale += 1
 
             marker = "*" if improved else " "
+            selected_metrics = val_result[f"full_class_{selected}"]
             logger.info(
-                "Epoch %03d %s | train=%.4f | val_loss=%.4f | val class=%.4f gated=%.4f logKPI=%.4f | selected=%s %.4f",
+                "Epoch %03d %s | train=%.4f | val_loss=%.4f | val class=%.4f gated=%.4f logKPI=%.4f | selected=%s %.4f | flag R/P/F1=%.3f/%.3f/%.3f",
                 epoch,
                 marker,
                 train_result["loss"]["total"],
@@ -998,6 +1281,9 @@ def run_pair_aware_training(
                 float(candidates["log_kpi"]),
                 selected,
                 score,
+                float(selected_metrics["flag_recall"]),
+                float(selected_metrics["flag_precision"]),
+                float(selected_metrics["flag_f1"]),
             )
             history.append(row)
 
@@ -1005,7 +1291,6 @@ def run_pair_aware_training(
                 trial.report(score, step=epoch)
                 if trial.should_prune():
                     import optuna
-
                     pruned = True
                     logger.info(
                         "Trial %d pruned at epoch %d (val_score=%.4f)",
@@ -1070,10 +1355,11 @@ def run_pair_aware_training(
                 "task": task,
                 "target_mask_attr": target_mask_attr,
                 "num_classes": num_classes,
-                "flag_class_handling": "learned direct prediction; no deterministic override",
+                "flag_handling": "separate learned binary gate",
                 "cuts": cuts.tolist(),
                 "epsilon": epsilon,
                 "gate_threshold": gate_threshold,
+                "flag_gate_threshold": flag_gate_threshold,
             },
             indent=2,
         ),
@@ -1087,6 +1373,37 @@ def run_pair_aware_training(
         "best_validation_score": None if best_score == -float("inf") else float(best_score),
         "model_state_path": str(artifact_dir / "model_state.pt"),
     }
+
+    if validation_loader is not None:
+        validation_result = _run_epoch(
+            model=model,
+            loader=validation_loader,
+            device=device,
+            optimizer=None,
+            class_weights=class_weights,
+            inactive_pos_weight=inactive_pos_weight,
+            flag_pos_weight=flag_pos_weight,
+            loss_weights=loss_weights,
+            log_mean=log_mean,
+            log_std=log_std,
+            cuts=cuts,
+            epsilon=epsilon,
+            gate_threshold=gate_threshold,
+            flag_gate_threshold=flag_gate_threshold,
+            target_mask_attr=target_mask_attr,
+            num_classes=num_classes,
+            collect_predictions=True,
+        )
+        result["validation_predictions_path"] = str(
+            _save_validation_outputs(
+                artifact_dir,
+                validation_result,
+                best_output,
+                num_classes,
+                flag_gate_threshold,
+            )
+        )
+
     if test_loader is not None:
         test_result = _run_epoch(
             model=model,
@@ -1095,12 +1412,14 @@ def run_pair_aware_training(
             optimizer=None,
             class_weights=class_weights,
             inactive_pos_weight=inactive_pos_weight,
+            flag_pos_weight=flag_pos_weight,
             loss_weights=loss_weights,
             log_mean=log_mean,
             log_std=log_std,
             cuts=cuts,
             epsilon=epsilon,
             gate_threshold=gate_threshold,
+            flag_gate_threshold=flag_gate_threshold,
             target_mask_attr=target_mask_attr,
             num_classes=num_classes,
             collect_predictions=True,
@@ -1110,9 +1429,10 @@ def run_pair_aware_training(
         result["selected_test_activity"] = test_result[f"activity_{best_output}"]
         result["selected_test_combined"] = result["selected_test_full_class"]
         _save_test_outputs(artifact_dir, test_result, best_output, num_classes)
-        _log_test_breakdown(logger, result["selected_test_full_class"], selected_output=best_output)
+        _log_test_breakdown(
+            logger, result["selected_test_full_class"], selected_output=best_output
+        )
 
-        # --- diagnostic plots ---
         pred_col = {
             "class": "class_prediction",
             "gated": "gated_prediction",
@@ -1152,19 +1472,16 @@ def evaluate_saved_pair_aware_model(
     cuts: np.ndarray,
     epsilon: float,
     gate_threshold: float,
+    flag_gate_threshold: float,
     selected_output: str,
     class_weight_mode: str,
     gate_pos_weight_mode: str,
+    flag_gate_pos_weight_mode: str,
+    flag_pos_weight_multiplier: float,
     num_classes: int,
     logger: logging.Logger,
     history_csv: Optional[Path] = None,
 ) -> dict:
-    """Load a saved state, evaluate it on test data, and export test metrics.
-
-    ``history_csv`` should point at the winning Optuna trial's ``history.csv``
-    so train/val curves stay from the Optuna search even when the evaluated
-    weights come from the final train+val retrain.
-    """
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     )
@@ -1184,6 +1501,14 @@ def evaluate_saved_pair_aware_model(
     inactive_pos_weight = compute_gate_pos_weight(
         train_loader, gate_pos_weight_mode, device, target_mask_attr, num_classes
     )
+    flag_pos_weight = compute_flag_pos_weight(
+        train_loader,
+        flag_gate_pos_weight_mode,
+        device,
+        target_mask_attr,
+        num_classes,
+        multiplier=flag_pos_weight_multiplier,
+    )
     test_result = _run_epoch(
         model=model,
         loader=test_loader,
@@ -1191,12 +1516,14 @@ def evaluate_saved_pair_aware_model(
         optimizer=None,
         class_weights=class_weights,
         inactive_pos_weight=inactive_pos_weight,
+        flag_pos_weight=flag_pos_weight,
         loss_weights=loss_weights,
         log_mean=log_mean,
         log_std=log_std,
         cuts=cuts,
         epsilon=epsilon,
         gate_threshold=gate_threshold,
+        flag_gate_threshold=flag_gate_threshold,
         target_mask_attr=target_mask_attr,
         num_classes=num_classes,
         collect_predictions=True,
@@ -1207,7 +1534,6 @@ def evaluate_saved_pair_aware_model(
     selected_metrics = test_result[f"full_class_{selected_output}"]
     _log_test_breakdown(logger, selected_metrics, selected_output=selected_output)
 
-    # --- diagnostic plots ---
     pred_col_map = {
         "class": "class_prediction",
         "gated": "gated_prediction",
@@ -1218,14 +1544,13 @@ def evaluate_saved_pair_aware_model(
     if "selected_prediction" in predictions_df.columns:
         pred_col = "selected_prediction"
     confusion = selected_metrics.get("confusion_matrix", [])
-    plots_training_dir = Path(output_dir)
     history_path = (
         Path(history_csv)
         if history_csv is not None
-        else plots_training_dir / task / "history.csv"
+        else Path(output_dir) / task / "history.csv"
     )
     save_training_plots(
-        training_dir=plots_training_dir,
+        training_dir=Path(output_dir),
         task=task,
         history_csv=history_path,
         confusion_matrix=confusion,

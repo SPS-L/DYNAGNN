@@ -50,6 +50,10 @@ def load_pair_aware_checkpoint(path: Path, *, expected_task: str) -> dict[str, A
     missing = sorted(required.difference(checkpoint))
     if missing:
         raise KeyError(f"Checkpoint {path} is missing fields: {missing}")
+    if "flag_gate_threshold" not in checkpoint and "class5_gate_threshold" not in checkpoint:
+        raise KeyError(
+            f"Checkpoint {path} is missing fields: ['flag_gate_threshold']"
+        )
     return checkpoint
 
 
@@ -133,20 +137,31 @@ def _attach_pair_tensors(sample, checkpoint: dict[str, Any]):
 
 
 def _decode(output: dict[str, torch.Tensor], checkpoint: dict[str, Any]) -> torch.Tensor:
-    logits = output["class_logits"]
+    severity_logits = output["class_logits"]
+    flag_probability = torch.sigmoid(output["flag_logit"])
     selected_output = str(checkpoint.get("selected_output", "class"))
+    flag = int(checkpoint["num_classes"]) - 1
+    threshold = float(
+        checkpoint.get(
+            "flag_gate_threshold",
+            checkpoint.get("class5_gate_threshold", 0.35),
+        )
+    )
+    flag_pred_mask = flag_probability >= threshold
 
     if selected_output == "class":
-        return logits.argmax(dim=1)
+        severity = severity_logits.argmax(dim=1)
+        return torch.where(flag_pred_mask, torch.full_like(severity, flag), severity)
 
     if selected_output == "gated":
         inactive_probability = torch.sigmoid(output["inactive_logit"])
-        active_prediction = logits[:, 1:].argmax(dim=1) + 1
-        return torch.where(
+        active_prediction = severity_logits[:, 1:].argmax(dim=1) + 1
+        severity = torch.where(
             inactive_probability >= float(checkpoint.get("gate_threshold", 0.5)),
             torch.zeros_like(active_prediction),
             active_prediction,
         )
+        return torch.where(flag_pred_mask, torch.full_like(severity, flag), severity)
 
     if selected_output == "log_kpi":
         prediction_std = output["log_kpi_std"].detach().cpu().numpy()
@@ -164,10 +179,8 @@ def _decode(output: dict[str, torch.Tensor], checkpoint: dict[str, Any]) -> torc
             values,
             side="left",
         ).astype(np.int64)
-        flag = int(checkpoint["num_classes"]) - 1
-        class_prediction = logits.argmax(dim=1).detach().cpu().numpy()
-        prediction[class_prediction == flag] = flag
-        return torch.tensor(prediction, dtype=torch.long, device=logits.device)
+        prediction[flag_pred_mask.detach().cpu().numpy()] = flag
+        return torch.tensor(prediction, dtype=torch.long, device=severity_logits.device)
 
     raise ValueError(f"Unsupported selected_output in checkpoint: {selected_output!r}")
 
