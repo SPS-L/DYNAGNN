@@ -24,7 +24,7 @@ data:
 
 simulation:
   event_time: 10.0
-  initialization_duration: 10.0  # steady-state init per OP before contingencies; use 0 to skip
+  initialization_duration: 10.0  # total Dynawo run time (s) per OP before contingency simulations, to find a steady state solution for the initial operating point
 
 network:
   country_filter: []
@@ -34,9 +34,9 @@ kpi:
   step_sec: 1.0
   class_bins:
     voltage:
-      cuts: [1e-06, 1.4999999999999999e-05, 5.9999999999999995e-05, 0.000225] # fair log-ish spacing; rebuild Dataset_*.csv to train on these
+      cuts: [1e-06, 1.4999999999999999e-05, 5.9999999999999995e-05, 0.000225]  # raw KPI thresholds (ascending), e.g. [1e-6, 2.25e-5, 3e-4, 5.625e-4]
     spower:
-      cuts: [1e-06, 2.9999999999999997e-05, 0.00011999999999999999, 0.00045]
+      cuts: [1e-06, 2.9999999999999997e-05, 0.00011999999999999999, 0.00045]  # raw KPI thresholds (ascending)
 
 model:
   num_classes: 6
@@ -49,18 +49,22 @@ training:
   seed: 42
   training: 0.7142857143
   validation: 0.1428571429
-  testing: 0.1428571429 
+  testing: 0.1428571429
 
   # Fixed loss construction and output-decoding settings.
   pair_aware:
     classification_weight: 1.0
     regression_weight: 0.30
     inactive_gate_weight: 0.20
-    flag_gate_weight: 0.50
+    flag_gate_weight: 0.50  # BCE for flag class K-1 (disconnected/controlled)
     ordinal_weight: 0.10
-    epsilon: 1.0e-10
-    inactive_gate_threshold: 0.50
-    flag_gate_threshold: 0.35
+    class_weight_mode: sqrt_inverse
+    inactive_gate_pos_weight_mode: balanced
+    flag_gate_pos_weight_mode: balanced  # none | balanced
+    flag_pos_weight_multiplier: 1.0  # scales balanced flag-gate pos_weight
+    inactive_gate_threshold: 0.50  # initial decode threshold (training / early stopping)
+    flag_gate_threshold: 0.50  # initial decode threshold for flag class K-1
+    # End-of-trial joint val sweep → trial score + checkpoint thresholds (not re-swept on retrain)
     threshold_calibration:
       inactive_gate_low: 0.05
       inactive_gate_high: 0.95
@@ -68,11 +72,9 @@ training:
       flag_gate_low: 0.05
       flag_gate_high: 0.95
       flag_gate_step: 0.05
-    class_weight_mode: sqrt_inverse
-    inactive_gate_pos_weight_mode: balanced
-    flag_gate_pos_weight_mode: balanced
-    flag_pos_weight_multiplier: 1.0
+    epsilon: 1.0e-10
     selection_output: auto
+    # Validation score for Optuna / early stopping (protection_selection_score)
     selection_score:
       balanced_accuracy: 0.30
       macro_f1: 0.25
@@ -82,7 +84,7 @@ training:
 
 optuna:
   n_trials: 15
-  study_name: nordic
+  study_name: nordic  # folder under data/training/ and data/model/
   hparams:
     hidden_dim:
       type: categorical
@@ -122,7 +124,7 @@ optuna:
       log: true
 
 inference:
-  initialization_duration: 10.0  # steady-state run before graph build; use 0 to skip
+  initialization_duration: 10.0  # total Dynawo run time (s) before constructing the graph, to find a steady state solution for the initial operating point
 """
 
 
