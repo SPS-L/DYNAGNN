@@ -15,6 +15,14 @@ from modules.pair_aware_gine import PairAwareGINE, PairAwareHParams
 MODEL_TYPE = "pair_aware_gine"
 
 
+def _inactive_gate_threshold(checkpoint: dict[str, Any]) -> float:
+    if "inactive_gate_threshold" in checkpoint:
+        return float(checkpoint["inactive_gate_threshold"])
+    if "gate_threshold" in checkpoint:
+        return float(checkpoint["gate_threshold"])
+    raise KeyError("inactive_gate_threshold")
+
+
 def load_pair_aware_checkpoint(path: Path, *, expected_task: str) -> dict[str, Any]:
     path = Path(path)
     if not path.exists():
@@ -45,11 +53,12 @@ def load_pair_aware_checkpoint(path: Path, *, expected_task: str) -> dict[str, A
         "log_kpi_mean",
         "log_kpi_std",
         "epsilon",
-        "gate_threshold",
     }
     missing = sorted(required.difference(checkpoint))
     if missing:
         raise KeyError(f"Checkpoint {path} is missing fields: {missing}")
+    if "inactive_gate_threshold" not in checkpoint and "gate_threshold" not in checkpoint:
+        raise KeyError(f"Checkpoint {path} is missing fields: ['inactive_gate_threshold']")
     return checkpoint
 
 
@@ -143,7 +152,7 @@ def _decode(output: dict[str, torch.Tensor], checkpoint: dict[str, Any]) -> torc
         inactive_probability = torch.sigmoid(output["inactive_logit"])
         active_prediction = logits[:, 1:].argmax(dim=1) + 1
         return torch.where(
-            inactive_probability >= float(checkpoint.get("gate_threshold", 0.5)),
+            inactive_probability >= _inactive_gate_threshold(checkpoint),
             torch.zeros_like(active_prediction),
             active_prediction,
         )

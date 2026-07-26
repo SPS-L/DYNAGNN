@@ -201,7 +201,7 @@ A separate operating-point context encoder is **not** used (`op_context_embeddin
 
 ### Configuration
 
-- **Fixed** under `training.pair_aware`: loss weights (`classification_weight`, `regression_weight`, `inactive_gate_weight`, `ordinal_weight`), `class_weight_mode`, `gate_pos_weight_mode`, `gate_threshold`, `epsilon`, `selection_output`.
+- **Fixed** under `training.pair_aware`: loss weights (`classification_weight`, `regression_weight`, `inactive_gate_weight`, `ordinal_weight`), `class_weight_mode`, `inactive_gate_pos_weight_mode`, `inactive_gate_threshold`, `epsilon`, `selection_output`, `selection_score.*`.
 - **Tuned** under `optuna.hparams` only: `hidden_dim`, `node_id_dim`, `contingency_id_dim`, `type_dim`, `pair_dim`, `num_gnn_layers`, `decoder_hidden_dim`, `dropout`, `lr`, `weight_decay`.
 - Set `model.num_classes` to **`len(cuts) + 2`** so it matches the KPI cuts and one flag class.
 

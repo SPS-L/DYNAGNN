@@ -114,12 +114,13 @@ The other `pair_aware` keys do **not** enter $\mathcal{L}$ as scalar multipliers
 | Key | Where it goes |
 |-----|----------------|
 | `class_weight_mode` | Builds per-class weights inside $\mathcal{L}_{\mathrm{CE}}$ (e.g. `inverse`, `sqrt_inverse`) |
-| `gate_pos_weight_mode` | Builds the positive-class weight inside $\mathcal{L}_{\mathrm{BCE}}$ (e.g. `balanced`) |
+| `inactive_gate_pos_weight_mode` | Builds the positive-class weight inside $\mathcal{L}_{\mathrm{BCE}}$ (e.g. `balanced`) |
 | `epsilon` | $\varepsilon$ in $\log_{10}(\mathrm{KPI}+\varepsilon)$ when forming regression targets (and when inverting log-KPI decode) |
-| `gate_threshold` | Decode only: treat as class 0 when $\sigma(\mathrm{gate})\ge$ threshold (`gated` path) |
+| `inactive_gate_threshold` | Decode only: treat as class 0 when $\sigma(\mathrm{inactive})\ge$ threshold (`gated` path) |
 | `selection_output` | Which decode path is scored for checkpoint / Optuna selection: `auto`, `class`, `gated`, or `log_kpi` |
+| `selection_score.*` | Weights of the validation selection score (`balanced_accuracy_weight`, `macro_f1_weight`, `accuracy_weight`, `within_one_weight`) |
 
-**Example (Nordic defaults from `Nordic_test_setup.py`):** $w_{\mathrm{cls}}=1.0$, $w_{\mathrm{reg}}=0.30$, $w_{\mathrm{gate}}=0.15$, $w_{\mathrm{ord}}=0.15$, `class_weight_mode: inverse`, `epsilon: 1.0e-10`, `selection_output: class`.
+**Example (Nordic defaults from `Nordic_test_setup.py`):** $w_{\mathrm{cls}}=1.0$, $w_{\mathrm{reg}}=0.30$, $w_{\mathrm{gate}}=0.15$, $w_{\mathrm{ord}}=0.15$, `class_weight_mode: inverse`, `epsilon: 1.0e-10`, `selection_output: class`, selection score weights `0.40 / 0.30 / 0.20 / 0.10`.
 
 ### `optuna.hparams` (tuned)
 
@@ -428,10 +429,15 @@ training:
     inactive_gate_weight: 0.15
     ordinal_weight: 0.15
     class_weight_mode: inverse
-    gate_pos_weight_mode: balanced
-    gate_threshold: 0.50
+    inactive_gate_pos_weight_mode: balanced
+    inactive_gate_threshold: 0.50
     epsilon: 1.0e-10
     selection_output: class
+    selection_score:
+      balanced_accuracy_weight: 0.40
+      macro_f1_weight: 0.30
+      accuracy_weight: 0.20
+      within_one_weight: 0.10
 
 optuna:
   n_trials: 15

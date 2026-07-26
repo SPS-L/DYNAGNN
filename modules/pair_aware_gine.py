@@ -60,6 +60,16 @@ class PairAwareLossWeights:
     ordinal_cdf: float = 0.10
 
 
+@dataclass(frozen=True)
+class SelectionScoreWeights:
+    """Weights for the Optuna / early-stopping validation selection score."""
+
+    balanced_accuracy_weight: float = 0.40
+    macro_f1_weight: float = 0.30
+    accuracy_weight: float = 0.20
+    within_one_weight: float = 0.10
+
+
 def _safe_global_mean_pool(x: torch.Tensor, batch: torch.Tensor, size: int) -> torch.Tensor:
     rows = []
     for graph_idx in range(int(size)):
@@ -287,7 +297,12 @@ def _safe_div(numerator: float | int, denominator: float | int) -> float:
     return float(numerator) / float(denominator) if float(denominator) > 0 else 0.0
 
 
-def classification_metrics(y_true: np.ndarray, y_pred: np.ndarray, num_classes: int) -> dict:
+def classification_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    num_classes: int,
+    selection_score_weights: SelectionScoreWeights | None = None,
+) -> dict:
     """Compute square confusion-matrix metrics and exact ordinal offsets.
 
     ``num_classes`` is the total number of output classes (KPI activity classes
@@ -374,15 +389,21 @@ def classification_metrics(y_true: np.ndarray, y_pred: np.ndarray, num_classes: 
         "error_offset_rate": offset_rate,
         "confusion_matrix": confusion.tolist(),
     }
-    metrics["selection_score"] = selection_score(metrics)
+    weights = selection_score_weights or SelectionScoreWeights()
+    metrics["selection_score"] = selection_score(metrics, weights)
     return metrics
 
-def selection_score(metrics: dict) -> float:
+
+def selection_score(
+    metrics: dict,
+    weights: SelectionScoreWeights | None = None,
+) -> float:
+    w = weights or SelectionScoreWeights()
     return float(
-        0.40 * metrics["balanced_accuracy"]
-        + 0.30 * metrics["macro_f1"]
-        + 0.20 * metrics["accuracy"]
-        + 0.10 * metrics["within_one_accuracy"]
+        w.balanced_accuracy_weight * metrics["balanced_accuracy"]
+        + w.macro_f1_weight * metrics["macro_f1"]
+        + w.accuracy_weight * metrics["accuracy"]
+        + w.within_one_weight * metrics["within_one_accuracy"]
     )
 
 
@@ -461,8 +482,9 @@ def _run_epoch(
     log_std: float,
     cuts: np.ndarray,
     epsilon: float,
-    gate_threshold: float,
+    inactive_gate_threshold: float,
     target_mask_attr: str,
+    selection_score_weights: SelectionScoreWeights,
     num_classes: int,
     collect_predictions: bool = False,
 ) -> dict:
@@ -540,7 +562,7 @@ def _run_epoch(
 
             detached_logits = logits.detach()
             class_pred = detached_logits.argmax(dim=1)
-            gated_pred = _decode_gated(detached_logits, gate_logit.detach(), gate_threshold)
+            gated_pred = _decode_gated(detached_logits, gate_logit.detach(), inactive_gate_threshold)
             log_pred_np = _classes_from_log_prediction(
                 reg_prediction.detach().cpu().numpy(),
                 log_mean=log_mean,
@@ -606,13 +628,13 @@ def _run_epoch(
     activity_true = _cat(activity_true_chunks)
     result = {
         "loss": {key: _safe_div(value, n_supervised) for key, value in sums.items()},
-        "full_class_class": classification_metrics(full_true, _cat(full_class_chunks), num_classes),
-        "full_class_gated": classification_metrics(full_true, _cat(full_gated_chunks), num_classes),
-        "full_class_log_kpi": classification_metrics(full_true, _cat(full_log_chunks), num_classes),
+        "full_class_class": classification_metrics(full_true, _cat(full_class_chunks), num_classes, selection_score_weights),
+        "full_class_gated": classification_metrics(full_true, _cat(full_gated_chunks), num_classes, selection_score_weights),
+        "full_class_log_kpi": classification_metrics(full_true, _cat(full_log_chunks), num_classes, selection_score_weights),
         # Secondary activity-only view. Prediction of flag class remains an error.
-        "activity_class": classification_metrics(activity_true, _cat(activity_class_chunks), num_classes),
-        "activity_gated": classification_metrics(activity_true, _cat(activity_gated_chunks), num_classes),
-        "activity_log_kpi": classification_metrics(activity_true, _cat(activity_log_chunks), num_classes),
+        "activity_class": classification_metrics(activity_true, _cat(activity_class_chunks), num_classes, selection_score_weights),
+        "activity_gated": classification_metrics(activity_true, _cat(activity_gated_chunks), num_classes, selection_score_weights),
+        "activity_log_kpi": classification_metrics(activity_true, _cat(activity_log_chunks), num_classes, selection_score_weights),
     }
     # Backward-compatible aliases; these are learned full-class metrics.
     result["combined_class"] = result["full_class_class"]
@@ -641,7 +663,7 @@ def compute_class_weights(
     return weights.float().to(device)
 
 
-def compute_gate_pos_weight(
+def compute_inactive_gate_pos_weight(
     loader,
     mode: str,
     device: torch.device,
@@ -861,13 +883,14 @@ def run_pair_aware_training(
     log_std: float,
     cuts: np.ndarray,
     epsilon: float,
-    gate_threshold: float,
+    inactive_gate_threshold: float,
     epochs: int,
     patience: int,
     fixed_epochs: Optional[int],
     selection_output: Optional[str],
     class_weight_mode: str,
-    gate_pos_weight_mode: str,
+    inactive_gate_pos_weight_mode: str,
+    selection_score_weights: SelectionScoreWeights,
     num_classes: int,
     logger: logging.Logger,
     trial=None,
@@ -885,7 +908,7 @@ def run_pair_aware_training(
     optimizer = torch.optim.AdamW(model.parameters(), lr=hparams.lr, weight_decay=hparams.weight_decay)
     scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=4, min_lr=1.0e-6)
     class_weights = compute_class_weights(train_loader, class_weight_mode, device, target_mask_attr, num_classes)
-    inactive_pos_weight = compute_gate_pos_weight(train_loader, gate_pos_weight_mode, device, target_mask_attr, num_classes)
+    inactive_pos_weight = compute_inactive_gate_pos_weight(train_loader, inactive_gate_pos_weight_mode, device, target_mask_attr, num_classes)
 
     trial_label = None if trial is None else int(trial.number)
     if trial_label is None:
@@ -903,6 +926,7 @@ def run_pair_aware_training(
             if inactive_pos_weight is None
             else [round(float(v), 4) for v in inactive_pos_weight.detach().cpu().tolist()],
         )
+        logger.info("Selection score weights: %s", asdict(selection_score_weights))
     else:
         logger.info(
             "--- %s trial %d | %s ---",
@@ -934,8 +958,9 @@ def run_pair_aware_training(
             log_std=log_std,
             cuts=cuts,
             epsilon=epsilon,
-            gate_threshold=gate_threshold,
+            inactive_gate_threshold=inactive_gate_threshold,
             target_mask_attr=target_mask_attr,
+            selection_score_weights=selection_score_weights,
             num_classes=num_classes,
         )
         row = {"epoch": epoch, **{f"train_{k}_loss": v for k, v in train_result["loss"].items()}}
@@ -953,8 +978,9 @@ def run_pair_aware_training(
                 log_std=log_std,
                 cuts=cuts,
                 epsilon=epsilon,
-                gate_threshold=gate_threshold,
+                inactive_gate_threshold=inactive_gate_threshold,
                 target_mask_attr=target_mask_attr,
+                selection_score_weights=selection_score_weights,
                 num_classes=num_classes,
             )
             candidates = {
@@ -1073,7 +1099,8 @@ def run_pair_aware_training(
                 "flag_class_handling": "learned direct prediction; no deterministic override",
                 "cuts": cuts.tolist(),
                 "epsilon": epsilon,
-                "gate_threshold": gate_threshold,
+                "inactive_gate_threshold": inactive_gate_threshold,
+                "selection_score_weights": asdict(selection_score_weights),
             },
             indent=2,
         ),
@@ -1100,8 +1127,9 @@ def run_pair_aware_training(
             log_std=log_std,
             cuts=cuts,
             epsilon=epsilon,
-            gate_threshold=gate_threshold,
+            inactive_gate_threshold=inactive_gate_threshold,
             target_mask_attr=target_mask_attr,
+            selection_score_weights=selection_score_weights,
             num_classes=num_classes,
             collect_predictions=True,
         )
@@ -1151,10 +1179,11 @@ def evaluate_saved_pair_aware_model(
     log_std: float,
     cuts: np.ndarray,
     epsilon: float,
-    gate_threshold: float,
+    inactive_gate_threshold: float,
     selected_output: str,
     class_weight_mode: str,
-    gate_pos_weight_mode: str,
+    inactive_gate_pos_weight_mode: str,
+    selection_score_weights: SelectionScoreWeights,
     num_classes: int,
     logger: logging.Logger,
     history_csv: Optional[Path] = None,
@@ -1181,8 +1210,8 @@ def evaluate_saved_pair_aware_model(
     class_weights = compute_class_weights(
         train_loader, class_weight_mode, device, target_mask_attr, num_classes
     )
-    inactive_pos_weight = compute_gate_pos_weight(
-        train_loader, gate_pos_weight_mode, device, target_mask_attr, num_classes
+    inactive_pos_weight = compute_inactive_gate_pos_weight(
+        train_loader, inactive_gate_pos_weight_mode, device, target_mask_attr, num_classes
     )
     test_result = _run_epoch(
         model=model,
@@ -1196,8 +1225,9 @@ def evaluate_saved_pair_aware_model(
         log_std=log_std,
         cuts=cuts,
         epsilon=epsilon,
-        gate_threshold=gate_threshold,
+        inactive_gate_threshold=inactive_gate_threshold,
         target_mask_attr=target_mask_attr,
+        selection_score_weights=selection_score_weights,
         num_classes=num_classes,
         collect_predictions=True,
     )

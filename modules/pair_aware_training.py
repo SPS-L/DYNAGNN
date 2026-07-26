@@ -18,8 +18,9 @@ from torch_geometric.loader import DataLoader
 from modules.pair_aware_gine import (
     PairAwareHParams,
     PairAwareLossWeights,
+    SelectionScoreWeights,
     compute_class_weights,
-    compute_gate_pos_weight,
+    compute_inactive_gate_pos_weight,
     evaluate_saved_pair_aware_model,
     run_pair_aware_training,
 )
@@ -316,6 +317,28 @@ def _loss_weights(config: dict) -> PairAwareLossWeights:
     )
 
 
+def _selection_score_weights(config: dict) -> SelectionScoreWeights:
+    pair_cfg = ((config.get("training", {}) or {}).get("pair_aware", {}) or {})
+    score_cfg = dict(pair_cfg.get("selection_score", {}) or {})
+    defaults = SelectionScoreWeights()
+
+    def _weight(new_key: str, legacy_key: str, default: float) -> float:
+        if new_key in score_cfg:
+            return float(score_cfg[new_key])
+        if legacy_key in score_cfg:
+            return float(score_cfg[legacy_key])
+        return float(default)
+
+    return SelectionScoreWeights(
+        balanced_accuracy_weight=_weight(
+            "balanced_accuracy_weight", "balanced_accuracy", defaults.balanced_accuracy_weight
+        ),
+        macro_f1_weight=_weight("macro_f1_weight", "macro_f1", defaults.macro_f1_weight),
+        accuracy_weight=_weight("accuracy_weight", "accuracy", defaults.accuracy_weight),
+        within_one_weight=_weight("within_one_weight", "within_one", defaults.within_one_weight),
+    )
+
+
 def _suggest(trial: optuna.Trial, name: str, spec: dict):
     if not isinstance(spec, dict):
         raise TypeError(f"optuna.hparams.{name} must be a mapping")
@@ -414,13 +437,14 @@ def _save_deployment_checkpoint(
     state_dict: dict,
     hparams: PairAwareHParams,
     loss_weights: PairAwareLossWeights,
+    selection_score_weights: SelectionScoreWeights,
     attachment: dict[str, Any],
     config: dict,
     log_mean: float,
     log_std: float,
     cuts: Sequence[float],
     epsilon: float,
-    gate_threshold: float,
+    inactive_gate_threshold: float,
     selected_output: str,
     best_epoch: int,
     best_validation_score: float,
@@ -433,6 +457,7 @@ def _save_deployment_checkpoint(
         "model_state_dict": state_dict,
         "hparams": asdict(hparams),
         "loss_weights": asdict(loss_weights),
+        "selection_score_weights": asdict(selection_score_weights),
         "num_classes": num_classes,
         "num_node_tokens": int(attachment["node_vocab_size"]),
         "num_contingency_tokens": int(attachment["contingency_vocab_size"]),
@@ -445,7 +470,7 @@ def _save_deployment_checkpoint(
         "log_kpi_std": float(log_std),
         "cuts": [float(value) for value in cuts],
         "epsilon": float(epsilon),
-        "gate_threshold": float(gate_threshold),
+        "inactive_gate_threshold": float(inactive_gate_threshold),
         "flag_class_handling": "learned direct prediction; no deterministic override",
         "node_continuous_columns": [1, 2, 3, 4, 6],
         "edge_continuous_features": ["r", "x", "b1", "g1", "b2", "g2"],
@@ -512,9 +537,16 @@ def run_task_training(
     patience = int(training_cfg.get("patience", 10))
     seed = int(training_cfg.get("seed", 42))
     epsilon = float(pair_cfg.get("epsilon", 1.0e-10))
-    gate_threshold = float(pair_cfg.get("gate_threshold", 0.5))
+    inactive_gate_threshold = float(
+        pair_cfg.get("inactive_gate_threshold", pair_cfg.get("gate_threshold", 0.5))
+    )
     class_weight_mode = str(pair_cfg.get("class_weight_mode", "sqrt_inverse"))
-    gate_pos_weight_mode = str(pair_cfg.get("gate_pos_weight_mode", "balanced"))
+    inactive_gate_pos_weight_mode = str(
+        pair_cfg.get(
+            "inactive_gate_pos_weight_mode",
+            pair_cfg.get("gate_pos_weight_mode", "balanced"),
+        )
+    )
     selection_output = str(pair_cfg.get("selection_output", "auto")).strip().lower()
     if selection_output in {"", "auto", "none", "null"}:
         selection_output_arg = None
@@ -525,6 +557,7 @@ def run_task_training(
             "training.pair_aware.selection_output must be auto, class, gated, or log_kpi"
         )
     loss_weights = _loss_weights(config)
+    selection_score_weights = _selection_score_weights(config)
 
     task_dir = Path(training_dir) / task
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -541,8 +574,8 @@ def run_task_training(
     class_weights = compute_class_weights(
         train_loader, class_weight_mode, device, target_mask_attr, num_classes
     )
-    inactive_pos_weight = compute_gate_pos_weight(
-        train_loader, gate_pos_weight_mode, device, target_mask_attr, num_classes
+    inactive_pos_weight = compute_inactive_gate_pos_weight(
+        train_loader, inactive_gate_pos_weight_mode, device, target_mask_attr, num_classes
     )
 
     logger.info("========== %s Optuna study ==========", task.capitalize())
@@ -556,6 +589,7 @@ def run_task_training(
         num_classes,
     )
     logger.info("Loss weights: %s", asdict(loss_weights))
+    logger.info("Selection score weights: %s", asdict(selection_score_weights))
     logger.info(
         "Class weights: %s",
         None
@@ -592,13 +626,14 @@ def run_task_training(
                 log_std=log_std,
                 cuts=cuts_array,
                 epsilon=epsilon,
-                gate_threshold=gate_threshold,
+                inactive_gate_threshold=inactive_gate_threshold,
                 epochs=epochs,
                 patience=patience,
                 fixed_epochs=None,
                 selection_output=selection_output_arg,
                 class_weight_mode=class_weight_mode,
-                gate_pos_weight_mode=gate_pos_weight_mode,
+                inactive_gate_pos_weight_mode=inactive_gate_pos_weight_mode,
+                selection_score_weights=selection_score_weights,
                 num_classes=num_classes,
                 logger=logger,
                 trial=trial,
@@ -681,13 +716,14 @@ def run_task_training(
         log_std=log_std,
         cuts=cuts_array,
         epsilon=epsilon,
-        gate_threshold=gate_threshold,
+        inactive_gate_threshold=inactive_gate_threshold,
         epochs=epochs,
         patience=patience,
         fixed_epochs=best_epoch,
         selection_output=selected_output,
         class_weight_mode=class_weight_mode,
-        gate_pos_weight_mode=gate_pos_weight_mode,
+        inactive_gate_pos_weight_mode=inactive_gate_pos_weight_mode,
+        selection_score_weights=selection_score_weights,
         num_classes=num_classes,
         logger=logger,
         trial=None,
@@ -715,10 +751,11 @@ def run_task_training(
         log_std=log_std,
         cuts=cuts_array,
         epsilon=epsilon,
-        gate_threshold=gate_threshold,
+        inactive_gate_threshold=inactive_gate_threshold,
         selected_output=selected_output,
         class_weight_mode=class_weight_mode,
-        gate_pos_weight_mode=gate_pos_weight_mode,
+        inactive_gate_pos_weight_mode=inactive_gate_pos_weight_mode,
+        selection_score_weights=selection_score_weights,
         num_classes=num_classes,
         logger=logger,
         history_csv=best_history_csv,
@@ -730,13 +767,14 @@ def run_task_training(
         state_dict=state_dict,
         hparams=best_hparams,
         loss_weights=loss_weights,
+        selection_score_weights=selection_score_weights,
         attachment=attachment,
         config=config,
         log_mean=log_mean,
         log_std=log_std,
         cuts=cuts,
         epsilon=epsilon,
-        gate_threshold=gate_threshold,
+        inactive_gate_threshold=inactive_gate_threshold,
         selected_output=selected_output,
         best_epoch=best_epoch,
         best_validation_score=float(best_trial.value),

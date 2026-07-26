@@ -16,7 +16,7 @@ Helpers to load pair-aware deployment checkpoints and run a single-scenario forw
 
 ## Checkpoint requirements
 
-Expects `model_type == "pair_aware_gine"` and fields including: `model_state_dict`, `hparams`, vocab sizes/maps, `selected_output`, `cuts`, log-KPI mean/std, `epsilon`, `gate_threshold`.
+Expects `model_type == "pair_aware_gine"` and fields including: `model_state_dict`, `hparams`, vocab sizes/maps, `selected_output`, `cuts`, log-KPI mean/std, `epsilon`, `inactive_gate_threshold` (legacy key: `gate_threshold`).
 
 ## Per-scenario prep
 

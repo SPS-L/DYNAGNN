@@ -75,7 +75,7 @@ Both call [`pair_aware_training.run_task_training()`](../modules/pair_aware_trai
 | `inactive_gate_weight` | BCE gate for class 0 vs active |
 | `ordinal_weight` | Ordinal CDF consistency on class logits |
 
-Also fixed: `class_weight_mode`, `gate_pos_weight_mode`, `gate_threshold`, `epsilon`, `selection_output` (`auto` / `class` / `gated` / `log_kpi`).
+Also fixed: `class_weight_mode`, `inactive_gate_pos_weight_mode`, `inactive_gate_threshold`, `epsilon`, `selection_output` (`auto` / `class` / `gated` / `log_kpi`), and `selection_score.*`.
 
 ### Optuna (`optuna.hparams`)
 
@@ -105,10 +105,10 @@ Ids are matched exactly when possible, then via canonical normalization and safe
 Per-epoch checkpoints and the winning Optuna trial maximize:
 
 ```text
-score = 0.40·balanced_accuracy + 0.30·macro_f1 + 0.20·accuracy + 0.10·within_one_accuracy
+score = w_ba·balanced_accuracy + w_f1·macro_f1 + w_acc·accuracy + w_w1·within_one_accuracy
 ```
 
-computed on validation predictions for the configured multi-class task. The score is **not** backpropagated; gradients come from the multi-term pair-aware loss only.
+with weights from `training.pair_aware.selection_score` (`balanced_accuracy_weight` / `macro_f1_weight` / `accuracy_weight` / `within_one_weight`; defaults `0.40 / 0.30 / 0.20 / 0.10`). Computed on validation predictions for the configured multi-class task. The score is **not** backpropagated; gradients come from the multi-term pair-aware loss only.
 
 `selection_output` chooses which decoding path is scored when set to `auto` (best among `class` / `gated` / `log_kpi` on validation) or a fixed mode.
 

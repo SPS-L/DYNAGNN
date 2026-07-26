@@ -58,10 +58,16 @@ training:
     inactive_gate_weight: 0.2
     ordinal_weight: 0.1
     class_weight_mode: inverse
-    gate_pos_weight_mode: balanced
-    gate_threshold: 0.50
+    inactive_gate_pos_weight_mode: balanced
+    inactive_gate_threshold: 0.50
     epsilon: 1.0e-10
     selection_output: class
+    # Validation score for Optuna / early stopping (selection_score)
+    selection_score:
+      balanced_accuracy_weight: 0.40
+      macro_f1_weight: 0.30
+      accuracy_weight: 0.20
+      within_one_weight: 0.10
 
 optuna:
   n_trials: 15

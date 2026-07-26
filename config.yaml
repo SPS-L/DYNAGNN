@@ -45,10 +45,16 @@ training:
     inactive_gate_weight: 
     ordinal_weight: 
     class_weight_mode: 
-    gate_pos_weight_mode: 
-    gate_threshold:
+    inactive_gate_pos_weight_mode: 
+    inactive_gate_threshold:
     epsilon: 
     selection_output: 
+    # Validation score for Optuna / early stopping (selection_score)
+    selection_score:
+      balanced_accuracy_weight: 
+      macro_f1_weight: 
+      accuracy_weight: 
+      within_one_weight: 
 
 optuna:
   n_trials:
