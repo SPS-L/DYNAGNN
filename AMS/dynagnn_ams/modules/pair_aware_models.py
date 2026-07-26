@@ -1,4 +1,4 @@
-# Pair-aware GINE inference and substation aggregation (DYNAGNN hierarchical flag-gate compatible).
+# Pair-aware GINE inference and substation aggregation (DYNAGNN v1.2 compatible).
 
 from __future__ import annotations
 
@@ -65,14 +65,6 @@ def _node_id(meta_key: str, metadata: dict) -> str:
     return str(metadata.get("id", meta_key)).strip()
 
 
-def _inactive_gate_threshold(checkpoint: dict[str, Any]) -> float:
-    if "inactive_gate_threshold" in checkpoint:
-        return float(checkpoint["inactive_gate_threshold"])
-    if "gate_threshold" in checkpoint:
-        return float(checkpoint["gate_threshold"])
-    raise KeyError("inactive_gate_threshold")
-
-
 def load_pair_aware_checkpoint(path: Path, *, expected_task: str) -> dict[str, Any]:
     path = Path(path)
     if not path.exists():
@@ -83,8 +75,8 @@ def load_pair_aware_checkpoint(path: Path, *, expected_task: str) -> dict[str, A
     if checkpoint.get("model_type") != MODEL_TYPE:
         raise ValueError(
             f"Checkpoint {path} has model_type={checkpoint.get('model_type')!r}, "
-            f"expected {MODEL_TYPE!r}. Copy DYNAGNN hierarchical deployment checkpoints "
-            f"({expected_task}_best_model.pt), not legacy GAT / pre-flag-gate weights."
+            f"expected {MODEL_TYPE!r}. Copy DYNAGNN v1.2 deployment checkpoints "
+            f"({expected_task}_best_model.pt), not legacy GAT weights."
         )
     if checkpoint.get("task") != expected_task:
         raise ValueError(
@@ -104,14 +96,11 @@ def load_pair_aware_checkpoint(path: Path, *, expected_task: str) -> dict[str, A
         "log_kpi_mean",
         "log_kpi_std",
         "epsilon",
+        "gate_threshold",
     }
     missing = sorted(required.difference(checkpoint))
     if missing:
         raise KeyError(f"Checkpoint {path} is missing fields: {missing}")
-    if "inactive_gate_threshold" not in checkpoint and "gate_threshold" not in checkpoint:
-        raise KeyError(f"Checkpoint {path} is missing fields: ['inactive_gate_threshold']")
-    if "flag_gate_threshold" not in checkpoint and "class5_gate_threshold" not in checkpoint:
-        raise KeyError(f"Checkpoint {path} is missing fields: ['flag_gate_threshold']")
     return checkpoint
 
 
@@ -188,31 +177,20 @@ def _attach_pair_tensors(sample: Data, checkpoint: dict[str, Any]) -> Data:
 
 
 def _decode(output: dict[str, torch.Tensor], checkpoint: dict[str, Any]) -> torch.Tensor:
-    severity_logits = output["class_logits"]
-    flag_probability = torch.sigmoid(output["flag_logit"])
+    logits = output["class_logits"]
     selected_output = str(checkpoint.get("selected_output", "class"))
-    flag = int(checkpoint["num_classes"]) - 1
-    threshold = float(
-        checkpoint.get(
-            "flag_gate_threshold",
-            checkpoint.get("class5_gate_threshold", 0.35),
-        )
-    )
-    flag_pred_mask = flag_probability >= threshold
 
     if selected_output == "class":
-        severity = severity_logits.argmax(dim=1)
-        return torch.where(flag_pred_mask, torch.full_like(severity, flag), severity)
+        return logits.argmax(dim=1)
 
     if selected_output == "gated":
         inactive_probability = torch.sigmoid(output["inactive_logit"])
-        active_prediction = severity_logits[:, 1:].argmax(dim=1) + 1
-        severity = torch.where(
-            inactive_probability >= _inactive_gate_threshold(checkpoint),
+        active_prediction = logits[:, 1:].argmax(dim=1) + 1
+        return torch.where(
+            inactive_probability >= float(checkpoint.get("gate_threshold", 0.5)),
             torch.zeros_like(active_prediction),
             active_prediction,
         )
-        return torch.where(flag_pred_mask, torch.full_like(severity, flag), severity)
 
     if selected_output == "log_kpi":
         prediction_std = output["log_kpi_std"].detach().cpu().numpy()
@@ -230,8 +208,10 @@ def _decode(output: dict[str, torch.Tensor], checkpoint: dict[str, Any]) -> torc
             values,
             side="left",
         ).astype(np.int64)
-        prediction[flag_pred_mask.detach().cpu().numpy()] = flag
-        return torch.tensor(prediction, dtype=torch.long, device=severity_logits.device)
+        flag = int(checkpoint["num_classes"]) - 1
+        class_prediction = logits.argmax(dim=1).detach().cpu().numpy()
+        prediction[class_prediction == flag] = flag
+        return torch.tensor(prediction, dtype=torch.long, device=logits.device)
 
     raise ValueError(f"Unsupported selected_output in checkpoint: {selected_output!r}")
 
@@ -388,7 +368,7 @@ def aggregate_max_substation_predictions(
 
 
 class PairAwareModels:
-    """Load DYNAGNN hierarchical pair-aware GINE checkpoints and run AMS inference.
+    """Load DYNAGNN v1.2 pair-aware GINE checkpoints and run AMS inference.
 
     Copy these files from ``<DYNAGNN data.path>/model/<study_name>/`` into
     ``AMS/dynagnn_ams/models/<network>/``:
@@ -398,9 +378,6 @@ class PairAwareModels:
     - ``x_scaler.pkl``
     - ``edge_attr_scaler.pkl``
 
-    Checkpoints must include the hierarchical heads (severity ``K-1`` + ``flag_head``)
-    and decode thresholds ``inactive_gate_threshold`` / ``flag_gate_threshold``
-    (legacy aliases ``gate_threshold`` / ``class5_gate_threshold`` are accepted).
     Optional metadata JSON (``*_best_hparams.json``) is not required; all fields
     needed for inference live inside the ``.pt`` checkpoints.
     """

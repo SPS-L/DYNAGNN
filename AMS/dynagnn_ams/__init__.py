@@ -7,4 +7,4 @@ from __future__ import annotations
 from dynagnn_ams.cli import resolve_models_dir, run
 
 __all__ = ["run", "resolve_models_dir"]
-__version__ = "1.3.0"
+__version__ = "1.2.0"

@@ -49,8 +49,6 @@ Expected checkpoint folder contents (same as `data/model/<study_name>/` after tr
 └── edge_attr_scaler.pkl
 ```
 
-Checkpoints must be the **hierarchical** DYNAGNN export (severity head `0…K−2` + binary **flag** head for class `K−1` + inactive gate). Decode uses `selected_output` plus calibrated `inactive_gate_threshold` / `flag_gate_threshold` stored in the `.pt` (legacy aliases `gate_threshold` / `class5_gate_threshold` are accepted). Pre-flag-gate weights are not compatible — retrain and copy fresh `*_best_model.pt` files after upgrading.
-
 | Argument | Description |
 |----------|-------------|
 | `dsl_path` | Scenario `.dsl` |
@@ -86,7 +84,7 @@ action_locations, events_list, substation_predictions = run(
 2. **Base graph** — PyG graph from IIDM + DYD
 3. **Electric distance** — `log1p(dZ_fault)`
 4. **Event graphs** — one graph per DSL event
-5. **Pair-aware GINE** — hierarchical severity + flag gate → voltage / spower classes → substation max aggregate
+5. **Pair-aware GINE** — voltage / spower → substation max aggregate
 6. **Node-breaker simplification** — `retained` flags on switches
 
 ## Layout

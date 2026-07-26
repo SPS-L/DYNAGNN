@@ -12,7 +12,7 @@ This note documents KPI labeling methodology and the training/inference model st
 | Train / validation / test split | Built **after** class labeling, during training | Built **before** labeling, from raw voltage scenarios | Same as v1.1 | Same as v1.11 |
 | Class datasets | Produced in dataset construction | Same stage; log10 + z-score + range cuts | Same stage; **fixed raw KPI cuts** | Same labeling as v1.11 |
 | Labeling metadata | Min / max per KPI table | $\mu$, $\sigma$, training z-cut thresholds | Raw cut thresholds in `KPI_class_bins.csv` | Same as v1.11 |
-| Activity model | — | GAT + CORAL ordinal head | GAT + CORAL ordinal head | **Pair-aware residual GINE** (severity + flag gate) |
+| Activity model | — | GAT + CORAL ordinal head | GAT + CORAL ordinal head | **Pair-aware residual GINE** (direct multi-class) |
 
 ---
 
@@ -172,17 +172,17 @@ v1.2 keeps the **v1.11 KPI labeling** (fixed raw cuts → KPI severity classes p
 | Aspect | v1.11 | v1.2 |
 |--------|-------|------|
 | Encoder | GAT | Residual edge-aware **GINE** |
-| Head | CORAL ordinal | **Severity logits** (`0 … K−2`) + **flag gate** (`K−1`) + inactive gate + log-KPI regression |
+| Head | CORAL ordinal | **Direct multi-class** logits + inactive gate + log-KPI regression |
 | Conditioning | Graph features + `fault_on` / `dz_fault` | Same electrical features **plus** target-id / contingency-id embeddings and explicit **target–contingency** pair interactions |
 | Architecture choice | Single GAT-CORAL path | Pair-aware GINE only (no GAT-CORAL fallback) |
 | Optuna studies | Shared-style GAT hparams (heads, CORAL threshold, under-penalty, …) | **Independent** Voltage and Spower studies; capacity + optimizer only |
-| Selection score | `high_recall + w_f1·high_f1 − w_loss·loss` | Configurable protection score (default `0.30·bal_acc + 0.25·macro_f1 + 0.15·acc + 0.10·within_one + 0.20·flag_recall`) |
+| Selection score | `high_recall + w_f1·high_f1 − w_loss·loss` | `0.40·balanced_acc + 0.30·macro_f1 + 0.20·acc + 0.10·within_one` |
 | Checkpoints | `gat_voltage_best_model.pt`, `gat_spower_best_model.pt` | `voltage_best_model.pt`, `spower_best_model.pt` |
 | External inference I/O | One class per component | **Unchanged** (`prediction_voltage.csv` / `prediction_spower.csv`) |
 
 ### Method (pair-aware GINE)
 
-`PairAwareGINE` predicts configured activity classes with a hierarchical output (`K = num_classes = len(cuts) + 2`). The GNN is the primary predictor. It receives:
+`PairAwareGINE` predicts configured activity classes **directly** (`0 … num_classes−1`, with `num_classes = len(cuts) + 2`). The GNN is the primary predictor. It receives:
 
 - graph topology and physical node/edge features (including `fault_on` and electrical distance to the fault);
 - explicit **target-component** identity embeddings;
@@ -191,18 +191,17 @@ v1.2 keeps the **v1.11 KPI labeling** (fixed raw cuts → KPI severity classes p
 
 A residual GINE stack with jumping knowledge feeds a shared decoder that produces:
 
-1. **severity logits** for KPI activity classes `0 … K−2`;
-2. a binary **flag gate** for class `K−1` (disconnected / controlled);
-3. an **inactive (class-0) gate** on the non-flag branch;
-4. an auxiliary **log-KPI** regression head (supervised where a finite KPI exists).
+1. **class logits** over all configured classes (KPI activity levels plus the flag class for disconnected / controlled components);
+2. an **inactive (class-0) gate**;
+3. an auxiliary **log-KPI** regression head (supervised where a finite KPI exists).
 
-The flag class is **learned** via the separate flag gate and applied at decode with `flag_gate_threshold`. No structural DISC/ACTIONS masks are used during training attachment. No historical KPI/class prior is used.
+The flag class is **learned** — there is no deterministic post-hoc override from disconnection flags at evaluation/inference. No structural disconnection masks are used. No historical KPI/class prior is used.
 
 A separate operating-point context encoder is **not** used (`op_context_embedding_dim` is not an Optuna parameter). OP information remains available through node/edge electrical features and graph mean/max pooling.
 
 ### Configuration
 
-- **Fixed** under `training.pair_aware`: loss weights (`classification_weight`, `regression_weight`, `inactive_gate_weight`, `flag_gate_weight`, `ordinal_weight`), `class_weight_mode`, `inactive_gate_pos_weight_mode`, `flag_gate_pos_weight_mode`, `flag_pos_weight_multiplier`, `inactive_gate_threshold`, `flag_gate_threshold`, `epsilon`, `selection_output`, `selection_score.*`.
+- **Fixed** under `training.pair_aware`: loss weights (`classification_weight`, `regression_weight`, `inactive_gate_weight`, `ordinal_weight`), `class_weight_mode`, `gate_pos_weight_mode`, `gate_threshold`, `epsilon`, `selection_output`.
 - **Tuned** under `optuna.hparams` only: `hidden_dim`, `node_id_dim`, `contingency_id_dim`, `type_dim`, `pair_dim`, `num_gnn_layers`, `decoder_hidden_dim`, `dropout`, `lr`, `weight_decay`.
 - Set `model.num_classes` to **`len(cuts) + 2`** so it matches the KPI cuts and one flag class.
 
@@ -288,4 +287,4 @@ Version 1.11 assigns labels **directly from raw KPI values** using fixed thresho
 
 Version 1.11 still predicted activity with a GAT + CORAL stack that treated ordinal ranks as cumulative thresholds and selected checkpoints mainly for high-severity recall. That design did not explicitly condition each target component on the **identity of the contingency** it is paired with, and CORAL decoding plus high-class heuristics added moving parts that were hard to align with a fixed multi-class labeling scheme.
 
-Version 1.2 replaces that stack with a **pair-aware residual GINE**: residual edge-aware message passing, target and contingency embeddings, a severity head for KPI classes, a separate **flag-class gate** for disconnected/controlled components, plus inactive-gate and log-KPI auxiliaries. Voltage and Spower are tuned in **separate Optuna studies** with capacity/optimizer search only; loss construction and the protection selection-score weights stay fixed under `training.pair_aware`. The external inference contract stays one predicted class per component, while the learned representation becomes explicitly event- and target-conditioned.
+Version 1.2 replaces that stack with a **pair-aware residual GINE**: residual edge-aware message passing, target and contingency embeddings, and a direct multi-class head (plus gate and log-KPI auxiliaries). Voltage and Spower are tuned in **separate Optuna studies** with capacity/optimizer search only; loss construction stays fixed under `training.pair_aware`. The external inference contract stays one predicted class per component, while the learned representation becomes explicitly event- and target-conditioned.

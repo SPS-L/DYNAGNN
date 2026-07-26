@@ -22,7 +22,7 @@ The work also belongs to the wider **AMS (Adaptive Model Selection)** research p
 
 - **Input**: steady-state operating points + contingencies/events
 - **Output**: per-component dynamic activity predictions (hotspots)
-- **Model (v1.2)**: pair-aware residual GINE — severity classes plus a learned flag-class (K−1) gate, with independent Optuna tuning for Voltage and Spower
+- **Model (v1.2)**: pair-aware residual GINE — direct multi-class prediction with independent Optuna tuning for Voltage and Spower
 
 ## Main entry points
 

@@ -18,10 +18,8 @@ from torch_geometric.loader import DataLoader
 from modules.pair_aware_gine import (
     PairAwareHParams,
     PairAwareLossWeights,
-    SelectionScoreWeights,
     compute_class_weights,
-    compute_inactive_gate_pos_weight,
-    compute_flag_pos_weight,
+    compute_gate_pos_weight,
     evaluate_saved_pair_aware_model,
     run_pair_aware_training,
 )
@@ -56,11 +54,11 @@ def _first_existing(paths: Sequence[Path], label: str) -> Path:
 def _task_paths(data_dir: Path) -> dict[str, Path]:
     return {
         "kpi_voltage": _first_existing(
-            [data_dir / "KPI" / "KPI_voltage.csv", data_dir / "kpi" / "KPI_voltage.csv", data_dir / "KPI_voltage.csv"],
+            [data_dir / "KPI" / "KPI_voltage.csv", data_dir / "KPI_voltage.csv"],
             "KPI_voltage.csv",
         ),
         "kpi_spower": _first_existing(
-            [data_dir / "KPI" / "KPI_spower.csv", data_dir / "kpi" / "KPI_spower.csv", data_dir / "KPI_spower.csv"],
+            [data_dir / "KPI" / "KPI_spower.csv", data_dir / "KPI_spower.csv"],
             "KPI_spower.csv",
         ),
     }
@@ -181,6 +179,7 @@ def attach_pair_aware_targets(
         data.op_name = normalize_op(getattr(data, "op_name", ""))
         event_id = str(getattr(data, "event_id", "")).strip()
         key = (data.op_name, event_id)
+
         rows = {
             "kpi_voltage": kpi_voltage_lookup.get(key),
             "kpi_spower": kpi_spower_lookup.get(key),
@@ -268,6 +267,7 @@ def _prepare_task(
     for data in train_graphs:
         data.y_class = getattr(data, label_attr)
         data.y_log_kpi = getattr(data, log_attr)
+        # Regression targets are collected only for activity classes (< flag_class).
         mask = getattr(data, mask_attr).bool() & (data.y_class >= 0) & (
             data.y_class < flag_class
         )
@@ -312,20 +312,7 @@ def _loss_weights(config: dict) -> PairAwareLossWeights:
         classification=float(pair_cfg.get("classification_weight", 1.0)),
         regression=float(pair_cfg.get("regression_weight", 0.30)),
         inactive_gate=float(pair_cfg.get("inactive_gate_weight", 0.20)),
-        flag_gate=float(pair_cfg.get("flag_gate_weight", pair_cfg.get("class5_gate_weight", 0.50))),
         ordinal_cdf=float(pair_cfg.get("ordinal_weight", 0.10)),
-    )
-
-
-def _selection_score_weights(config: dict) -> SelectionScoreWeights:
-    pair_cfg = ((config.get("training", {}) or {}).get("pair_aware", {}) or {})
-    score_cfg = pair_cfg.get("selection_score", {}) or {}
-    return SelectionScoreWeights(
-        balanced_accuracy=float(score_cfg.get("balanced_accuracy", 0.30)),
-        macro_f1=float(score_cfg.get("macro_f1", 0.25)),
-        accuracy=float(score_cfg.get("accuracy", 0.15)),
-        within_one=float(score_cfg.get("within_one", 0.10)),
-        flag_recall=float(score_cfg.get("flag_recall", 0.20)),
     )
 
 
@@ -427,28 +414,25 @@ def _save_deployment_checkpoint(
     state_dict: dict,
     hparams: PairAwareHParams,
     loss_weights: PairAwareLossWeights,
-    selection_score_weights: SelectionScoreWeights,
     attachment: dict[str, Any],
     config: dict,
     log_mean: float,
     log_std: float,
     cuts: Sequence[float],
     epsilon: float,
-    inactive_gate_threshold: float,
-    flag_gate_threshold: float,
+    gate_threshold: float,
     selected_output: str,
     best_epoch: int,
     best_validation_score: float,
     num_classes: int,
 ) -> Path:
     checkpoint = {
-        "checkpoint_version": 4,
+        "checkpoint_version": 3,
         "model_type": MODEL_TYPE,
         "task": task,
         "model_state_dict": state_dict,
         "hparams": asdict(hparams),
         "loss_weights": asdict(loss_weights),
-        "selection_score_weights": asdict(selection_score_weights),
         "num_classes": num_classes,
         "num_node_tokens": int(attachment["node_vocab_size"]),
         "num_contingency_tokens": int(attachment["contingency_vocab_size"]),
@@ -461,10 +445,8 @@ def _save_deployment_checkpoint(
         "log_kpi_std": float(log_std),
         "cuts": [float(value) for value in cuts],
         "epsilon": float(epsilon),
-        "inactive_gate_threshold": float(inactive_gate_threshold),
-        "flag_gate_threshold": float(flag_gate_threshold),
-        "thresholds_calibrated": True,
-        "flag_handling": "separate learned binary gate; no deterministic override",
+        "gate_threshold": float(gate_threshold),
+        "flag_class_handling": "learned direct prediction; no deterministic override",
         "node_continuous_columns": [1, 2, 3, 4, 6],
         "edge_continuous_features": ["r", "x", "b1", "g1", "b2", "g2"],
         "config_version": (config.get("dynagnn", {}) or {}).get("version"),
@@ -530,32 +512,9 @@ def run_task_training(
     patience = int(training_cfg.get("patience", 10))
     seed = int(training_cfg.get("seed", 42))
     epsilon = float(pair_cfg.get("epsilon", 1.0e-10))
-    initial_inactive_gate_threshold = float(
-        pair_cfg.get("inactive_gate_threshold", pair_cfg.get("gate_threshold", 0.5))
-    )
-    initial_flag_gate_threshold = float(
-        pair_cfg.get("flag_gate_threshold", pair_cfg.get("class5_gate_threshold", 0.35))
-    )
-    threshold_calibration_cfg = dict(pair_cfg.get("threshold_calibration", {}) or {})
+    gate_threshold = float(pair_cfg.get("gate_threshold", 0.5))
     class_weight_mode = str(pair_cfg.get("class_weight_mode", "sqrt_inverse"))
-    inactive_gate_pos_weight_mode = str(
-        pair_cfg.get(
-            "inactive_gate_pos_weight_mode",
-            pair_cfg.get("gate_pos_weight_mode", "balanced"),
-        )
-    )
-    flag_gate_pos_weight_mode = str(
-        pair_cfg.get(
-            "flag_gate_pos_weight_mode",
-            pair_cfg.get("class5_gate_pos_weight_mode", "balanced"),
-        )
-    )
-    flag_pos_weight_multiplier = float(
-        pair_cfg.get(
-            "flag_pos_weight_multiplier",
-            pair_cfg.get("class5_pos_weight_multiplier", 1.0),
-        )
-    )
+    gate_pos_weight_mode = str(pair_cfg.get("gate_pos_weight_mode", "balanced"))
     selection_output = str(pair_cfg.get("selection_output", "auto")).strip().lower()
     if selection_output in {"", "auto", "none", "null"}:
         selection_output_arg = None
@@ -566,7 +525,6 @@ def run_task_training(
             "training.pair_aware.selection_output must be auto, class, gated, or log_kpi"
         )
     loss_weights = _loss_weights(config)
-    selection_score_weights = _selection_score_weights(config)
 
     task_dir = Path(training_dir) / task
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -583,16 +541,8 @@ def run_task_training(
     class_weights = compute_class_weights(
         train_loader, class_weight_mode, device, target_mask_attr, num_classes
     )
-    inactive_pos_weight = compute_inactive_gate_pos_weight(
-        train_loader, inactive_gate_pos_weight_mode, device, target_mask_attr, num_classes
-    )
-    flag_pos_weight = compute_flag_pos_weight(
-        train_loader,
-        flag_gate_pos_weight_mode,
-        device,
-        target_mask_attr,
-        num_classes,
-        multiplier=flag_pos_weight_multiplier,
+    inactive_pos_weight = compute_gate_pos_weight(
+        train_loader, gate_pos_weight_mode, device, target_mask_attr, num_classes
     )
 
     logger.info("========== %s Optuna study ==========", task.capitalize())
@@ -606,7 +556,6 @@ def run_task_training(
         num_classes,
     )
     logger.info("Loss weights: %s", asdict(loss_weights))
-    logger.info("Selection score weights: %s", asdict(selection_score_weights))
     logger.info(
         "Class weights: %s",
         None
@@ -618,18 +567,6 @@ def run_task_training(
         None
         if inactive_pos_weight is None
         else [round(float(v), 4) for v in inactive_pos_weight.detach().cpu().tolist()],
-    )
-    logger.info(
-        "Flag-gate pos_weight: %s",
-        None
-        if flag_pos_weight is None
-        else [round(float(v), 4) for v in flag_pos_weight.detach().cpu().tolist()],
-    )
-    logger.info(
-        "Initial decode thresholds | inactive=%.3f | flag=%.3f "
-        "(early stop / prune on val_loss; joint val calibration at end of each Optuna trial)",
-        initial_inactive_gate_threshold,
-        initial_flag_gate_threshold,
     )
     logger.info("Artifacts: %s", task_dir)
 
@@ -655,22 +592,16 @@ def run_task_training(
                 log_std=log_std,
                 cuts=cuts_array,
                 epsilon=epsilon,
-                inactive_gate_threshold=initial_inactive_gate_threshold,
-                flag_gate_threshold=initial_flag_gate_threshold,
+                gate_threshold=gate_threshold,
                 epochs=epochs,
                 patience=patience,
                 fixed_epochs=None,
                 selection_output=selection_output_arg,
                 class_weight_mode=class_weight_mode,
-                inactive_gate_pos_weight_mode=inactive_gate_pos_weight_mode,
-                flag_gate_pos_weight_mode=flag_gate_pos_weight_mode,
-                flag_pos_weight_multiplier=flag_pos_weight_multiplier,
-                selection_score_weights=selection_score_weights,
+                gate_pos_weight_mode=gate_pos_weight_mode,
                 num_classes=num_classes,
                 logger=logger,
                 trial=trial,
-                calibrate_thresholds=True,
-                threshold_calibration=threshold_calibration_cfg,
             )
         except optuna.TrialPruned:
             raise
@@ -680,19 +611,6 @@ def run_task_training(
         trial.set_user_attr("model_state_path", result["model_state_path"])
         trial.set_user_attr("selected_output", result["selected_output"])
         trial.set_user_attr("best_epoch", int(result["best_epoch"]))
-        trial.set_user_attr(
-            "inactive_gate_threshold", float(result["inactive_gate_threshold"])
-        )
-        trial.set_user_attr(
-            "flag_gate_threshold", float(result["flag_gate_threshold"])
-        )
-        trial.set_user_attr(
-            "thresholds_calibrated", bool(result.get("thresholds_calibrated", False))
-        )
-        if result.get("best_validation_loss") is not None:
-            trial.set_user_attr(
-                "best_validation_loss", float(result["best_validation_loss"])
-            )
         return float(score)
 
     study = optuna.create_study(
@@ -716,15 +634,6 @@ def run_task_training(
         raise RuntimeError(
             f"Best {task} Optuna trial {best_trial.number} has invalid best_epoch={best_epoch}"
         )
-    # Calibrated thresholds from the winning trial (no re-sweep on retrain).
-    inactive_gate_threshold = float(
-        best_trial.user_attrs.get(
-            "inactive_gate_threshold", initial_inactive_gate_threshold
-        )
-    )
-    flag_gate_threshold = float(
-        best_trial.user_attrs.get("flag_gate_threshold", initial_flag_gate_threshold)
-    )
 
     # Train/val curves stay tied to the winning Optuna trial (not the retrain).
     optuna_state_path = Path(str(best_trial.user_attrs.get("model_state_path", "")))
@@ -740,14 +649,10 @@ def run_task_training(
         best_trial.number,
     )
     logger.info(
-        "best_val_loss=%.4f | calibrated_score=%.4f | best_epoch=%d | decode=%s | "
-        "inactive_thr=%.3f | flag_thr=%.3f | hparams=%s",
-        float(best_trial.user_attrs.get("best_validation_loss", float("nan"))),
+        "best_val=%.4f | best_epoch=%d | decode=%s | hparams=%s",
         float(best_trial.value),
         best_epoch,
         selected_output,
-        inactive_gate_threshold,
-        flag_gate_threshold,
         best_trial.params,
     )
 
@@ -756,8 +661,7 @@ def run_task_training(
     train_val_loader = DataLoader(train_val_scaled, batch_size=batch_size, shuffle=True)
     final_root = task_dir / "final_retrain"
     logger.info(
-        "Retraining %s on train+val (%d graphs) for %d epochs with best hparams "
-        "(reuse calibrated thresholds; no sweep)...",
+        "Retraining %s on train+val (%d graphs) for %d epochs with best hparams...",
         task,
         len(train_val_scaled),
         best_epoch,
@@ -777,21 +681,16 @@ def run_task_training(
         log_std=log_std,
         cuts=cuts_array,
         epsilon=epsilon,
-        inactive_gate_threshold=inactive_gate_threshold,
-        flag_gate_threshold=flag_gate_threshold,
+        gate_threshold=gate_threshold,
         epochs=epochs,
         patience=patience,
         fixed_epochs=best_epoch,
         selection_output=selected_output,
         class_weight_mode=class_weight_mode,
-        inactive_gate_pos_weight_mode=inactive_gate_pos_weight_mode,
-        flag_gate_pos_weight_mode=flag_gate_pos_weight_mode,
-        flag_pos_weight_multiplier=flag_pos_weight_multiplier,
-        selection_score_weights=selection_score_weights,
+        gate_pos_weight_mode=gate_pos_weight_mode,
         num_classes=num_classes,
         logger=logger,
         trial=None,
-        calibrate_thresholds=False,
     )
     state_path = Path(str(retrain_result["model_state_path"]))
     if not state_path.exists():
@@ -816,14 +715,10 @@ def run_task_training(
         log_std=log_std,
         cuts=cuts_array,
         epsilon=epsilon,
-        inactive_gate_threshold=inactive_gate_threshold,
-        flag_gate_threshold=flag_gate_threshold,
+        gate_threshold=gate_threshold,
         selected_output=selected_output,
         class_weight_mode=class_weight_mode,
-        inactive_gate_pos_weight_mode=inactive_gate_pos_weight_mode,
-        flag_gate_pos_weight_mode=flag_gate_pos_weight_mode,
-        flag_pos_weight_multiplier=flag_pos_weight_multiplier,
-        selection_score_weights=selection_score_weights,
+        gate_pos_weight_mode=gate_pos_weight_mode,
         num_classes=num_classes,
         logger=logger,
         history_csv=best_history_csv,
@@ -835,37 +730,30 @@ def run_task_training(
         state_dict=state_dict,
         hparams=best_hparams,
         loss_weights=loss_weights,
-        selection_score_weights=selection_score_weights,
         attachment=attachment,
         config=config,
         log_mean=log_mean,
         log_std=log_std,
         cuts=cuts,
         epsilon=epsilon,
-        inactive_gate_threshold=inactive_gate_threshold,
-        flag_gate_threshold=flag_gate_threshold,
+        gate_threshold=gate_threshold,
         selected_output=selected_output,
         best_epoch=best_epoch,
         best_validation_score=float(best_trial.value),
         num_classes=num_classes,
     )
     logger.info(
-        "Saved %s deployment checkpoint: %s (trial=%d, train+val retrain, "
-        "selected_output=%s, inactive_thr=%.3f, flag_thr=%.3f)",
+        "Saved %s deployment checkpoint: %s (trial=%d, train+val retrain, selected_output=%s)",
         task,
         checkpoint_path,
         best_trial.number,
         selected_output,
-        inactive_gate_threshold,
-        flag_gate_threshold,
     )
     return {
         "best_trial": int(best_trial.number),
         "best_validation_score": float(best_trial.value),
         "best_epoch": best_epoch,
         "selected_output": selected_output,
-        "inactive_gate_threshold": inactive_gate_threshold,
-        "flag_gate_threshold": flag_gate_threshold,
         "hparams": asdict(best_hparams),
         "checkpoint": str(checkpoint_path),
         "final_retrain_path": str(state_path),
