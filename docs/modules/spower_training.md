@@ -16,5 +16,5 @@ Targets generator nodes via `gen_node_mask`. Deployment checkpoint: `data/model/
 
 ## Related modules
 
-- [`pair_aware_training`](pair_aware_training.md), [`pair_aware_gine`](pair_aware_gine.md), [`voltage_training`](voltage_training.md)
+- [`pair_aware_training`](pair_aware_training.md), [`pair_aware_gine`](pair_aware_gine.md), [`training_plots`](training_plots.md), [`voltage_training`](voltage_training.md)
 - [`src/training.md`](../src/training.md)

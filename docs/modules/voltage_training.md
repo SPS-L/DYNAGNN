@@ -16,5 +16,5 @@ Targets bus nodes via `bus_node_mask`. Deployment checkpoint: `data/model/<study
 
 ## Related modules
 
-- [`pair_aware_training`](pair_aware_training.md), [`pair_aware_gine`](pair_aware_gine.md), [`spower_training`](spower_training.md)
+- [`pair_aware_training`](pair_aware_training.md), [`pair_aware_gine`](pair_aware_gine.md), [`training_plots`](training_plots.md), [`spower_training`](spower_training.md)
 - [`src/training.md`](../src/training.md)

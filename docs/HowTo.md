@@ -120,7 +120,19 @@ The other `pair_aware` keys do **not** enter $\mathcal{L}$ as scalar multipliers
 | `selection_output` | Which decode path is scored for checkpoint / Optuna selection: `auto`, `class`, `gated`, or `log_kpi` |
 | `selection_score.*` | Weights of the validation selection score (`balanced_accuracy_weight`, `macro_f1_weight`, `accuracy_weight`, `within_one_weight`) |
 
-**Example (Nordic defaults from `Nordic_test_setup.py`):** $w_{\mathrm{cls}}=1.0$, $w_{\mathrm{reg}}=0.30$, $w_{\mathrm{gate}}=0.15$, $w_{\mathrm{ord}}=0.15$, `class_weight_mode: inverse`, `epsilon: 1.0e-10`, `selection_output: class`, selection score weights `0.40 / 0.30 / 0.20 / 0.10`.
+**Example (Nordic defaults from `Nordic_test_setup.py`):** $w_{\mathrm{cls}}=1.0$, $w_{\mathrm{reg}}=0.30$, $w_{\mathrm{gate}}=0.20$, $w_{\mathrm{ord}}=0.10$, `class_weight_mode: inverse`, `epsilon: 1.0e-10`, `selection_output: class`, selection score weights `0.40 / 0.30 / 0.20 / 0.10`.
+
+Legacy config aliases still accepted for the inactive gate: `gate_threshold` → `inactive_gate_threshold`, `gate_pos_weight_mode` → `inactive_gate_pos_weight_mode`.
+
+### Diagnostic plots
+
+After training, figures are written to `data/training/<study_name>/<task>/plots/` by [`modules/training_plots.py`](modules/training_plots.md):
+
+| File | Contents |
+|------|----------|
+| `loss_curve.png` | One multi-subplot PNG (total, classification, regression, gate, ordinal); train blue / val orange — from the winning Optuna trial’s `history.csv` |
+| `score_curve.png` | Validation selection scores (`class` / `gated` / `logKPI` / selected) from the same trial history |
+| `confusion_matrix.png`, `distance_histogram.png`, `node_example_*.png` | Test-set diagnostics from the final train+val model |
 
 ### `optuna.hparams` (tuned)
 
@@ -236,7 +248,7 @@ python3 main.py --from-step dataset --to-step training
 | `curve_process` | Combined KPI tables | `KPI/KPI_voltage.csv`, `KPI/KPI_spower.csv` |
 | `split` | Train/val/test split | `Dataset/train_val_test_split.csv` |
 | `dataset` | Class-label datasets | `Dataset/Dataset_Voltage.csv`, `Dataset/Dataset_Spower.csv`, `Dataset/KPI_class_bins.csv` |
-| `training` | Trained models | `model/<study_name>/voltage_best_model.pt`, `model/<study_name>/spower_best_model.pt`, `training/<study_name>/<task>/plots/` |
+| `training` | Trained models | `model/<study_name>/voltage_best_model.pt`, `model/<study_name>/spower_best_model.pt`, `training/<study_name>/<task>/plots/` (multi-subplot `loss_curve.png`, `score_curve.png`, test diagnostics) |
 
 See the per-stage input tables in [`src/simulate.md`](src/simulate.md), [`src/build_op_assets.md`](src/build_op_assets.md), [`src/curves_post_process.md`](src/curves_post_process.md), [`src/dataset_split_step.md`](src/dataset_split_step.md), [`src/dataset_construction.md`](src/dataset_construction.md), and [`src/training.md`](src/training.md).
 
@@ -426,8 +438,8 @@ training:
   pair_aware:
     classification_weight: 1.0
     regression_weight: 0.30
-    inactive_gate_weight: 0.15
-    ordinal_weight: 0.15
+    inactive_gate_weight: 0.2
+    ordinal_weight: 0.1
     class_weight_mode: inverse
     inactive_gate_pos_weight_mode: balanced
     inactive_gate_threshold: 0.50

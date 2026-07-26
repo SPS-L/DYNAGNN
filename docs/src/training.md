@@ -25,7 +25,7 @@ End-to-end **pair-aware GINE training**: build a shared PyG dataset (voltage + s
 | `data/model/<study_name>/voltage_best_model.pt`, `spower_best_model.pt` | Deployment checkpoints |
 | `data/model/<study_name>/voltage_best_hparams.json`, `spower_best_hparams.json` | Checkpoint metadata (hparams, vocabs, cuts, …) |
 | `data/model/<study_name>/training_summary.json` | Best-trial summary for both tasks |
-| `data/training/<study_name>/voltage/`, `…/<study_name>/spower/` | Optuna SQLite/CSV, trial folders, test outputs, and `plots/` (`optuna.study_name`) |
+| `data/training/<study_name>/voltage/`, `…/<study_name>/spower/` | Optuna SQLite/CSV, trial folders, test outputs, and `plots/` (`optuna.study_name`). `loss_curve.png` is one multi-subplot figure (total + classification / regression / gate / ordinal; train blue / val orange) from the best trial’s `history.csv` via [`training_plots`](../modules/training_plots.md) |
 
 ## Main entry point
 
@@ -114,9 +114,9 @@ with weights from `training.pair_aware.selection_score` (`balanced_accuracy_weig
 
 ## Final train+val retrain
 
-After Optuna, the deployment checkpoint is **not** the winning trial’s train-only weights. The best hparams and decode path are used to retrain on **train+val** for exactly the trial’s `best_epoch` epochs. That model is saved as `<task>_best_model.pt` and scored on test. Optuna SQLite/CSV and the train/val loss/score plots still come from the best trial’s `history.csv`.
+After Optuna, the deployment checkpoint is **not** the winning trial’s train-only weights. The best hparams and decode path are used to retrain on **train+val** for exactly the trial’s `best_epoch` epochs. That model is saved as `<task>_best_model.pt` and scored on test. Optuna SQLite/CSV and the train/val loss/score plots still come from the best trial’s `history.csv` (`loss_curve.png` = one multi-subplot PNG; see [`training_plots`](../modules/training_plots.md)).
 
 ## Related modules
 
-- [`pair_aware_gine`](../modules/pair_aware_gine.md), [`pair_aware_training`](../modules/pair_aware_training.md), [`voltage_training`](../modules/voltage_training.md), [`spower_training`](../modules/spower_training.md)
+- [`pair_aware_gine`](../modules/pair_aware_gine.md), [`pair_aware_training`](../modules/pair_aware_training.md), [`training_plots`](../modules/training_plots.md), [`voltage_training`](../modules/voltage_training.md), [`spower_training`](../modules/spower_training.md)
 - [`graph_construction`](../modules/graph_construction.md), [`electric_distance`](../modules/electric_distance.md)

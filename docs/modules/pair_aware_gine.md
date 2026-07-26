@@ -12,8 +12,9 @@ Shared **pair-aware residual GINE** model, losses, metrics, and training/evaluat
 | Name | Role |
 |------|------|
 | `PairAwareHParams` | Model capacity and optimizer settings (Optuna-tuned) |
-| `PairAwareLossWeights` | Fixed classification / regression / gate / ordinal weights |
-| `PairAwareGINE` | Residual GINE encoder + multi-class / gate / log-KPI heads |
+| `PairAwareLossWeights` | Fixed classification / regression / inactive-gate / ordinal weights |
+| `SelectionScoreWeights` | Configurable validation selection-score weights (Optuna / early stopping) |
+| `PairAwareGINE` | Residual GINE encoder + multi-class / inactive-gate / log-KPI heads |
 | `ResidualGINEBlock` | One residual edge-aware GINE layer |
 
 ## Model behavior
@@ -37,7 +38,13 @@ Forward output keys: `class_logits`, `inactive_logit`, `log_kpi_std`.
 | `run_pair_aware_training(...)` | Epoch loop, early stopping, checkpoint selection |
 | `evaluate_saved_pair_aware_model(...)` | Reload best weights and evaluate on a loader |
 | `classification_metrics(...)` | Confusion-matrix metrics and ordinal offsets |
-| `selection_score(...)` | Validation composite used by Optuna |
+| `selection_score(...)` | Validation composite used by Optuna / early stopping |
+
+Selection score (weights from `training.pair_aware.selection_score`, defaults `0.40 / 0.30 / 0.20 / 0.10`):
+
+```text
+score = w_ba·balanced_accuracy + w_f1·macro_f1 + w_acc·accuracy + w_w1·within_one_accuracy
+```
 
 ## Decode paths
 
@@ -49,15 +56,15 @@ Forward output keys: `class_logits`, `inactive_logit`, `log_kpi_std`.
 
 ## Training artifacts
 
-After evaluating the final best model on the test set, diagnostic figures are written to `data/training/<study_name>/<task>/plots/` by `modules/training_plots.py`:
+After evaluating the final best model on the test set, diagnostic figures are written to `data/training/<study_name>/<task>/plots/` by [`training_plots.py`](training_plots.md):
 
 | File | Contents |
 |------|----------|
-| `loss_curve.png` | Train and validation loss curves per epoch — total plus classification / regression / gate / ordinal components (from the winning Optuna trial’s `optuna_trials/trial_N/history.csv`; the deployment model itself is a later train+val retrain) |
+| `loss_curve.png` | **One** multi-subplot PNG: total, classification, regression, gate, ordinal (train blue / val orange). Curves come from the winning Optuna trial’s `optuna_trials/trial_N/history.csv`; the deployment model itself is a later train+val retrain |
 | `score_curve.png` | Validation selection scores per epoch (`class` / `gated` / `logKPI`, plus the selected score) from the same Optuna `history.csv` |
 | `confusion_matrix.png` | Row-normalised confusion matrix on the test set (final train+val model) |
 | `distance_histogram.png` | Histogram of signed prediction offsets (pred − true) |
-| `node_example_cls<N>_<UNDER|OVER>_ex<k>_of_5.png` | Up to 5 under- and 5 over-prediction examples |
+| `node_example_cls<N>_<UNDER\|OVER>_ex<k>_of_5.png` | Up to 5 under- and 5 over-prediction examples |
 
 ## Notes
 

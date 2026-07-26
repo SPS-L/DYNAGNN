@@ -8,8 +8,8 @@ All figures are written under ``<training_dir>/<task>/plots/``
 ``loss_curve.png`` / ``score_curve.png`` are built from the winning Optuna
 trial's ``history.csv`` (under ``optuna_trials/trial_N/``), but the PNGs
 themselves are saved in the shared task ``plots/`` folder with the other
-diagnostics. The loss curve shows total loss plus classification,
-regression, gate, and ordinal components for train and validation.
+diagnostics. The loss figure is one PNG with subplots: total train/val,
+then one panel per loss component (classification, regression, gate, …).
 """
 from __future__ import annotations
 
@@ -24,6 +24,19 @@ logger = logging.getLogger(__name__)
 
 MAX_NODE_EXAMPLES = 5
 _DPI = 150
+
+# Preferred subplot order; any other train_*_loss keys are appended after these.
+_LOSS_COMPONENT_ORDER: tuple[str, ...] = (
+    "total",
+    "classification",
+    "regression",
+    "gate",
+    "inactive_gate",
+    "flag_gate",
+    "ordinal",
+)
+_TRAIN_LOSS_COLOR = "#1f77b4"
+_VAL_LOSS_COLOR = "#ff7f0e"
 
 
 # ---------------------------------------------------------------------------
@@ -46,27 +59,27 @@ def _ensure_plots_dir(training_dir: Path, task: str) -> Path:
     return plots_dir
 
 
+def _loss_component_names(columns: Sequence[str]) -> list[str]:
+    """Return ordered loss component names present as train_*_loss and/or val_*_loss."""
+    found: set[str] = set()
+    for col in columns:
+        for prefix in ("train_", "val_"):
+            suffix = "_loss"
+            if col.startswith(prefix) and col.endswith(suffix):
+                name = col[len(prefix) : -len(suffix)]
+                if name:
+                    found.add(name)
+    ordered = [name for name in _LOSS_COMPONENT_ORDER if name in found]
+    extras = sorted(found.difference(ordered))
+    return ordered + extras
+
+
 # ---------------------------------------------------------------------------
 # Loss curve
 # ---------------------------------------------------------------------------
 
-# Distinct colors for every train/val series on the shared loss plot.
-_LOSS_CURVE_STYLES: tuple[tuple[str, str, str], ...] = (
-    ("train_total_loss", "train total", "#111111"),
-    ("train_classification_loss", "train classification", "#1f77b4"),
-    ("train_regression_loss", "train regression", "#2ca02c"),
-    ("train_gate_loss", "train gate", "#d62728"),
-    ("train_ordinal_loss", "train ordinal", "#9467bd"),
-    ("val_total_loss", "val total", "#7f7f7f"),
-    ("val_classification_loss", "val classification", "#17becf"),
-    ("val_regression_loss", "val regression", "#bcbd22"),
-    ("val_gate_loss", "val gate", "#ff7f0e"),
-    ("val_ordinal_loss", "val ordinal", "#e377c2"),
-)
-
-
 def plot_loss_curve(history_path: Path, plots_dir: Path, task: str) -> None:
-    """Read ``history.csv`` and write ``loss_curve.png`` (all components, train + val)."""
+    """Read ``history.csv`` and write ``loss_curve.png`` (subplot per loss term)."""
     plt = _safe_import_plt()
     if plt is None:
         logger.warning("matplotlib not available; skipping loss_curve.png")
@@ -77,25 +90,67 @@ def plot_loss_curve(history_path: Path, plots_dir: Path, task: str) -> None:
         logger.warning("No epoch column in %s; skipping loss_curve.png", history_path)
         return
 
-    fig, ax = plt.subplots(figsize=(9, 5))
-    plotted_any = False
-    for col, label, color in _LOSS_CURVE_STYLES:
-        if col not in df.columns or not df[col].notna().any():
-            continue
-        ax.plot(df["epoch"], df[col], label=label, color=color, linestyle="-", linewidth=1.6)
-        plotted_any = True
+    components = _loss_component_names(df.columns)
+    panels: list[str] = []
+    for name in components:
+        train_col = f"train_{name}_loss"
+        val_col = f"val_{name}_loss"
+        has_train = train_col in df.columns and bool(df[train_col].notna().any())
+        has_val = val_col in df.columns and bool(df[val_col].notna().any())
+        if has_train or has_val:
+            panels.append(name)
 
-    if not plotted_any:
-        plt.close(fig)
+    if not panels:
         logger.warning("No loss columns in %s; skipping loss_curve.png", history_path)
         return
 
-    ax.set_title(f"{task.capitalize()} — loss curves", fontsize=14)
-    ax.set_xlabel("Epoch", fontsize=12)
-    ax.set_ylabel("Loss", fontsize=12)
-    ax.legend(fontsize=9, ncol=2)
-    ax.grid(axis="y", alpha=0.25)
-    plt.tight_layout()
+    n = len(panels)
+    ncols = 1 if n == 1 else 2
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(6.0 * ncols, 3.4 * nrows),
+        squeeze=False,
+        sharex=True,
+    )
+    flat_axes = axes.ravel()
+
+    for idx, name in enumerate(panels):
+        ax = flat_axes[idx]
+        train_col = f"train_{name}_loss"
+        val_col = f"val_{name}_loss"
+        if train_col in df.columns and df[train_col].notna().any():
+            ax.plot(
+                df["epoch"],
+                df[train_col],
+                label="train",
+                color=_TRAIN_LOSS_COLOR,
+                linewidth=1.6,
+            )
+        if val_col in df.columns and df[val_col].notna().any():
+            ax.plot(
+                df["epoch"],
+                df[val_col],
+                label="val",
+                color=_VAL_LOSS_COLOR,
+                linewidth=1.6,
+            )
+        title = "Total" if name == "total" else name.replace("_", " ").capitalize()
+        ax.set_title(title, fontsize=12)
+        ax.set_ylabel("Loss", fontsize=10)
+        ax.grid(axis="y", alpha=0.25)
+        ax.legend(fontsize=9, loc="best")
+
+    for ax in flat_axes[n:]:
+        ax.set_visible(False)
+
+    for ax in flat_axes[:n]:
+        if ax.get_visible():
+            ax.set_xlabel("Epoch", fontsize=10)
+
+    fig.suptitle(f"{task.capitalize()} — loss curves", fontsize=14, y=1.02)
+    fig.tight_layout()
     out = plots_dir / "loss_curve.png"
     fig.savefig(out, dpi=_DPI, bbox_inches="tight")
     plt.close(fig)

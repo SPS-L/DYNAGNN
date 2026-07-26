@@ -32,14 +32,14 @@ Repository integration for pair-aware GINE training: attach shared identity/even
 | `data/training/<study_name>/<task>/optuna_*.sqlite3`, `optuna_trials.csv` | Optuna study artifacts |
 | `data/training/<study_name>/<task>/optuna_trials/trial_N/` | Per-trial `history.csv`, `model_state.pt`, `model_metadata.json` |
 | `data/training/<study_name>/<task>/final_retrain/` | Train+val retrain of best hparams (`history.csv`, `model_state.pt`) |
-| `data/training/<study_name>/<task>/plots/` | Final diagnostic figures (train/val curves from best Optuna trial; test plots from final model) |
+| `data/training/<study_name>/<task>/plots/` | Diagnostic figures from [`training_plots`](training_plots.md): multi-subplot `loss_curve.png` + `score_curve.png` from the best Optuna trial; confusion / distance / node examples from the final train+val test eval |
 
 ## Flow (per task)
 
 1. Read `num_classes` from `config["model"]["num_classes"]` (must be >= 2); validate `len(cuts) == num_classes - 2`.
 2. Bind task-specific label / log-KPI / mask attributes; fit train-only log-KPI mean/std using activity classes only (labels `< num_classes - 1`).
 3. Sample Optuna hparams from `optuna.hparams` (capacity + optimizer only).
-4. Train with fixed `training.pair_aware` loss weights; maximize validation selection score.
+4. Train with fixed `training.pair_aware` loss weights; maximize validation selection score (`training.pair_aware.selection_score`).
 5. Retrain the best hparams on **train+val** for the winning trial’s `best_epoch` epochs (no validation early stopping).
 6. Evaluate that final model on the test set; save it as the deployment checkpoint. Train/val Optuna plots and study tables remain from the best trial.
 
@@ -47,5 +47,5 @@ Voltage and Spower use **separate** Optuna studies but a **shared** node/conting
 
 ## Related modules
 
-- [`pair_aware_gine`](pair_aware_gine.md), [`voltage_training`](voltage_training.md), [`spower_training`](spower_training.md)
+- [`pair_aware_gine`](pair_aware_gine.md), [`training_plots`](training_plots.md), [`voltage_training`](voltage_training.md), [`spower_training`](spower_training.md)
 - [`src/training.md`](../src/training.md)

@@ -209,7 +209,7 @@ Pipeline entry points are unchanged: `main.py` → `src/training.py` → `module
 
 ### Nordic example
 
-Operating point **10** was removed from the bundled Nordic example (folder and docs). The example now ships **nine** operating points (`operating_point_1` … `operating_point_9`). The Nordic config from `Nordic_test_setup.py` uses four KPI cuts → `num_classes: 6`. Set required `optuna.study_name` so checkpoints land under `data/model/<study_name>/`.
+The bundled Nordic example ships **35** operating points (`operating_point_1` … `operating_point_35`). The Nordic config from `Nordic_test_setup.py` uses four KPI cuts → `num_classes: 6`. Set required `optuna.study_name` so checkpoints land under `data/model/<study_name>/`.
 
 ### Artifacts (v1.2)
 
@@ -220,7 +220,7 @@ Operating point **10** was removed from the bundled Nordic example (folder and d
 | `data/model/<study_name>/x_scaler.pkl`, `edge_attr_scaler.pkl` | Train-fit feature scalers |
 | `data/training/<study_name>/<task>/optuna_*.sqlite3`, `optuna_trials.csv` | Per-task Optuna studies (`optuna.study_name`) |
 | `data/training/<study_name>/<task>/optuna_trials/trial_N/` | Per-trial history and weights |
-| `data/training/<study_name>/<task>/plots/` | Test diagnostic figures (loss curve, confusion matrix, …) |
+| `data/training/<study_name>/<task>/plots/` | Diagnostics from `modules/training_plots.py`: multi-subplot `loss_curve.png` + `score_curve.png` from the best Optuna trial; confusion / distance / node examples from the final train+val test eval |
 
 **Removed from the active stack:** GAT-CORAL training/decoding modules, `gat_*_best_model.pt` naming, CORAL Optuna knobs (`under_penalty_lambda`, `coral_prediction_threshold`, …), and high-class selection weights (`high_class_threshold`, `selection_f1_weight`, `selection_loss_weight`).
 
