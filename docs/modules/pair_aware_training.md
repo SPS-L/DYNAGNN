@@ -39,7 +39,7 @@ Repository integration for pair-aware GINE training: attach shared identity/even
 1. Read `num_classes` from `config["model"]["num_classes"]` (must be >= 2); validate `len(cuts) == num_classes - 2`.
 2. Bind task-specific label / log-KPI / mask attributes; fit train-only log-KPI mean/std using activity classes only (labels `< num_classes - 1`).
 3. Sample Optuna hparams from `optuna.hparams` (capacity + optimizer only).
-4. Train with fixed `training.pair_aware` loss weights; maximize validation selection score.
+4. Train with fixed `training.pair_aware` loss weights; maximize validation **protection selection score** (`training.pair_aware.selection_score`).
 5. Retrain the best hparams on **train+val** for the winning trial’s `best_epoch` epochs (no validation early stopping).
 6. Evaluate that final model on the test set; save it as the deployment checkpoint. Train/val Optuna plots and study tables remain from the best trial.
 

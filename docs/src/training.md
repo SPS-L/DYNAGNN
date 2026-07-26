@@ -48,14 +48,17 @@ Set `model.num_classes` to **`len(cuts) + 2`** (must be >= 2): `len(cuts)` KPI a
 
 DYNAGNN uses one model family: **`PairAwareGINE`** (`modules/pair_aware_gine.py`). There is no architecture selector and no legacy GAT-CORAL path.
 
-The model predicts activity classes **directly** (`0 … num_classes−1`) and uses:
+With $K =$ `model.num_classes`, the model uses a hierarchical output:
 
 - residual edge-aware **GINE** message passing;
 - concatenation of the initial node representation and all GINE-layer outputs (jumping knowledge);
 - **target-component** and **contingency** identity embeddings;
 - event encoding and explicit target–contingency pair interactions;
 - graph mean/max context;
-- a multi-class head, a class-0 (inactive) gate, and an auxiliary log-KPI regression head.
+- a **severity** head for classes `0 … K−2`;
+- a binary **flag gate** for class `K−1` (disconnected / controlled);
+- a class-0 **inactive gate** on the non-flag branch;
+- an auxiliary log-KPI regression head.
 
 Operating-point information enters through node/edge electrical features and graph-level pooling. A separate OP-context encoder is **not** used.
 
@@ -70,12 +73,13 @@ Both call [`pair_aware_training.run_task_training()`](../modules/pair_aware_trai
 
 | Weight key | Role |
 |------------|------|
-| `classification_weight` | Cross-entropy over all configured classes |
+| `classification_weight` | Cross-entropy on severity classes `0 … K−2` |
 | `regression_weight` | Smooth L1 on standardized log-KPI (finite KPI targets only; flag class has none) |
-| `inactive_gate_weight` | BCE gate for class 0 vs active |
-| `ordinal_weight` | Ordinal CDF consistency on class logits |
+| `inactive_gate_weight` | BCE gate for class 0 vs active (severity samples) |
+| `flag_gate_weight` | BCE gate for flag class `K−1` |
+| `ordinal_weight` | Ordinal CDF consistency on severity logits |
 
-Also fixed: `class_weight_mode`, `gate_pos_weight_mode`, `gate_threshold`, `epsilon`, `selection_output` (`auto` / `class` / `gated` / `log_kpi`).
+Also fixed: `class_weight_mode`, `gate_pos_weight_mode`, `flag_gate_pos_weight_mode`, `flag_pos_weight_multiplier`, `gate_threshold`, `flag_gate_threshold`, `epsilon`, `selection_output` (`auto` / `class` / `gated` / `log_kpi`), and `selection_score.*`.
 
 ### Optuna (`optuna.hparams`)
 
@@ -102,13 +106,14 @@ Ids are matched exactly when possible, then via canonical normalization and safe
 
 ## Training selection score
 
-Per-epoch checkpoints and the winning Optuna trial maximize:
+Per-epoch checkpoints and the winning Optuna trial maximize the **protection selection score**:
 
 ```text
-score = 0.40·balanced_accuracy + 0.30·macro_f1 + 0.20·accuracy + 0.10·within_one_accuracy
+score = w_ba·balanced_accuracy + w_f1·macro_f1 + w_acc·accuracy
+      + w_w1·within_one_accuracy + w_fr·flag_recall
 ```
 
-computed on validation predictions for the configured multi-class task. The score is **not** backpropagated; gradients come from the multi-term pair-aware loss only.
+with weights from `training.pair_aware.selection_score` (Nordic defaults: `0.30 / 0.25 / 0.15 / 0.10 / 0.20`). The score is computed on validation predictions for the configured multi-class task. It is **not** backpropagated; gradients come from the multi-term pair-aware loss only.
 
 `selection_output` chooses which decoding path is scored when set to `auto` (best among `class` / `gated` / `log_kpi` on validation) or a fixed mode.
 

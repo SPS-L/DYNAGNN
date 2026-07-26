@@ -66,6 +66,12 @@ training:
     flag_gate_threshold: 0.35
     epsilon: 1.0e-10
     selection_output: class
+    selection_score:
+      balanced_accuracy: 0.30
+      macro_f1: 0.25
+      accuracy: 0.15
+      within_one: 0.10
+      flag_recall: 0.20
 
 optuna:
   n_trials: 15

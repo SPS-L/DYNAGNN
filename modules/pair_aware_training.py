@@ -18,6 +18,7 @@ from torch_geometric.loader import DataLoader
 from modules.pair_aware_gine import (
     PairAwareHParams,
     PairAwareLossWeights,
+    SelectionScoreWeights,
     compute_class_weights,
     compute_gate_pos_weight,
     compute_flag_pos_weight,
@@ -316,6 +317,18 @@ def _loss_weights(config: dict) -> PairAwareLossWeights:
     )
 
 
+def _selection_score_weights(config: dict) -> SelectionScoreWeights:
+    pair_cfg = ((config.get("training", {}) or {}).get("pair_aware", {}) or {})
+    score_cfg = pair_cfg.get("selection_score", {}) or {}
+    return SelectionScoreWeights(
+        balanced_accuracy=float(score_cfg.get("balanced_accuracy", 0.30)),
+        macro_f1=float(score_cfg.get("macro_f1", 0.25)),
+        accuracy=float(score_cfg.get("accuracy", 0.15)),
+        within_one=float(score_cfg.get("within_one", 0.10)),
+        flag_recall=float(score_cfg.get("flag_recall", 0.20)),
+    )
+
+
 def _suggest(trial: optuna.Trial, name: str, spec: dict):
     if not isinstance(spec, dict):
         raise TypeError(f"optuna.hparams.{name} must be a mapping")
@@ -414,6 +427,7 @@ def _save_deployment_checkpoint(
     state_dict: dict,
     hparams: PairAwareHParams,
     loss_weights: PairAwareLossWeights,
+    selection_score_weights: SelectionScoreWeights,
     attachment: dict[str, Any],
     config: dict,
     log_mean: float,
@@ -434,6 +448,7 @@ def _save_deployment_checkpoint(
         "model_state_dict": state_dict,
         "hparams": asdict(hparams),
         "loss_weights": asdict(loss_weights),
+        "selection_score_weights": asdict(selection_score_weights),
         "num_classes": num_classes,
         "num_node_tokens": int(attachment["node_vocab_size"]),
         "num_contingency_tokens": int(attachment["contingency_vocab_size"]),
@@ -540,6 +555,7 @@ def run_task_training(
             "training.pair_aware.selection_output must be auto, class, gated, or log_kpi"
         )
     loss_weights = _loss_weights(config)
+    selection_score_weights = _selection_score_weights(config)
 
     task_dir = Path(training_dir) / task
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -579,6 +595,7 @@ def run_task_training(
         num_classes,
     )
     logger.info("Loss weights: %s", asdict(loss_weights))
+    logger.info("Selection score weights: %s", asdict(selection_score_weights))
     logger.info(
         "Class weights: %s",
         None
@@ -632,6 +649,7 @@ def run_task_training(
                 gate_pos_weight_mode=gate_pos_weight_mode,
                 flag_gate_pos_weight_mode=flag_gate_pos_weight_mode,
                 flag_pos_weight_multiplier=flag_pos_weight_multiplier,
+                selection_score_weights=selection_score_weights,
                 num_classes=num_classes,
                 logger=logger,
                 trial=trial,
@@ -724,6 +742,7 @@ def run_task_training(
         gate_pos_weight_mode=gate_pos_weight_mode,
         flag_gate_pos_weight_mode=flag_gate_pos_weight_mode,
         flag_pos_weight_multiplier=flag_pos_weight_multiplier,
+        selection_score_weights=selection_score_weights,
         num_classes=num_classes,
         logger=logger,
         trial=None,
@@ -758,6 +777,7 @@ def run_task_training(
         gate_pos_weight_mode=gate_pos_weight_mode,
         flag_gate_pos_weight_mode=flag_gate_pos_weight_mode,
         flag_pos_weight_multiplier=flag_pos_weight_multiplier,
+        selection_score_weights=selection_score_weights,
         num_classes=num_classes,
         logger=logger,
         history_csv=best_history_csv,
@@ -769,6 +789,7 @@ def run_task_training(
         state_dict=state_dict,
         hparams=best_hparams,
         loss_weights=loss_weights,
+        selection_score_weights=selection_score_weights,
         attachment=attachment,
         config=config,
         log_mean=log_mean,

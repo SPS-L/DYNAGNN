@@ -62,6 +62,17 @@ class PairAwareLossWeights:
     ordinal_cdf: float = 0.10
 
 
+@dataclass(frozen=True)
+class SelectionScoreWeights:
+    """Weights for validation protection_selection_score (Optuna / early stopping)."""
+
+    balanced_accuracy: float = 0.30
+    macro_f1: float = 0.25
+    accuracy: float = 0.15
+    within_one: float = 0.10
+    flag_recall: float = 0.20
+
+
 def _safe_global_mean_pool(x: torch.Tensor, batch: torch.Tensor, size: int) -> torch.Tensor:
     rows = []
     for graph_idx in range(int(size)):
@@ -384,12 +395,26 @@ def classification_metrics(y_true: np.ndarray, y_pred: np.ndarray, num_classes: 
     return metrics
 
 def selection_score(metrics: dict) -> float:
-    """General six-class score used for reporting."""
+    """Legacy reporting score (not used for Optuna / early stopping)."""
     return float(
         0.40 * metrics["balanced_accuracy"]
         + 0.30 * metrics["macro_f1"]
         + 0.20 * metrics["accuracy"]
         + 0.10 * metrics["within_one_accuracy"]
+    )
+
+
+def protection_selection_score(
+    metrics: dict,
+    weights: SelectionScoreWeights,
+) -> float:
+    """Validation score used for Optuna trials and early stopping."""
+    return float(
+        float(weights.balanced_accuracy) * metrics["balanced_accuracy"]
+        + float(weights.macro_f1) * metrics["macro_f1"]
+        + float(weights.accuracy) * metrics["accuracy"]
+        + float(weights.within_one) * metrics["within_one_accuracy"]
+        + float(weights.flag_recall) * float(metrics["flag_recall"])
     )
 
 
@@ -513,6 +538,7 @@ def _run_epoch(
     flag_gate_threshold: float,
     target_mask_attr: str,
     num_classes: int,
+    selection_score_weights: SelectionScoreWeights,
     collect_predictions: bool = False,
 ) -> dict:
     train_mode = optimizer is not None
@@ -771,12 +797,8 @@ def _run_epoch(
         metrics["flag_recall"] = flag_recall
         metrics["flag_precision"] = flag_precision
         metrics["flag_f1"] = flag_f1
-        metrics["protection_selection_score"] = float(
-            0.30 * metrics["balanced_accuracy"]
-            + 0.25 * metrics["macro_f1"]
-            + 0.15 * metrics["accuracy"]
-            + 0.10 * metrics["within_one_accuracy"]
-            + 0.20 * flag_recall
+        metrics["protection_selection_score"] = protection_selection_score(
+            metrics, selection_score_weights
         )
 
     result["combined_class"] = result["full_class_class"]
@@ -1123,6 +1145,7 @@ def run_pair_aware_training(
     gate_pos_weight_mode: str,
     flag_gate_pos_weight_mode: str,
     flag_pos_weight_multiplier: float,
+    selection_score_weights: SelectionScoreWeights,
     num_classes: int,
     logger: logging.Logger,
     trial=None,
@@ -1176,6 +1199,7 @@ def run_pair_aware_training(
             None if flag_pos_weight is None else [round(float(v), 4) for v in flag_pos_weight.detach().cpu().tolist()],
             float(flag_gate_threshold),
         )
+        logger.info("Selection score weights: %s", asdict(selection_score_weights))
     else:
         logger.info(
             "--- %s trial %d | %s ---",
@@ -1211,6 +1235,7 @@ def run_pair_aware_training(
             gate_threshold=gate_threshold,
             flag_gate_threshold=flag_gate_threshold,
             target_mask_attr=target_mask_attr,
+            selection_score_weights=selection_score_weights,
             num_classes=num_classes,
         )
         row = {
@@ -1235,6 +1260,7 @@ def run_pair_aware_training(
                 gate_threshold=gate_threshold,
                 flag_gate_threshold=flag_gate_threshold,
                 target_mask_attr=target_mask_attr,
+                selection_score_weights=selection_score_weights,
                 num_classes=num_classes,
             )
             candidates = {
@@ -1360,6 +1386,7 @@ def run_pair_aware_training(
                 "epsilon": epsilon,
                 "gate_threshold": gate_threshold,
                 "flag_gate_threshold": flag_gate_threshold,
+                "selection_score_weights": asdict(selection_score_weights),
             },
             indent=2,
         ),
@@ -1391,6 +1418,7 @@ def run_pair_aware_training(
             gate_threshold=gate_threshold,
             flag_gate_threshold=flag_gate_threshold,
             target_mask_attr=target_mask_attr,
+            selection_score_weights=selection_score_weights,
             num_classes=num_classes,
             collect_predictions=True,
         )
@@ -1421,6 +1449,7 @@ def run_pair_aware_training(
             gate_threshold=gate_threshold,
             flag_gate_threshold=flag_gate_threshold,
             target_mask_attr=target_mask_attr,
+            selection_score_weights=selection_score_weights,
             num_classes=num_classes,
             collect_predictions=True,
         )
@@ -1478,6 +1507,7 @@ def evaluate_saved_pair_aware_model(
     gate_pos_weight_mode: str,
     flag_gate_pos_weight_mode: str,
     flag_pos_weight_multiplier: float,
+    selection_score_weights: SelectionScoreWeights,
     num_classes: int,
     logger: logging.Logger,
     history_csv: Optional[Path] = None,
@@ -1525,6 +1555,7 @@ def evaluate_saved_pair_aware_model(
         gate_threshold=gate_threshold,
         flag_gate_threshold=flag_gate_threshold,
         target_mask_attr=target_mask_attr,
+        selection_score_weights=selection_score_weights,
         num_classes=num_classes,
         collect_predictions=True,
     )

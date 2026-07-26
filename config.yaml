@@ -53,6 +53,13 @@ training:
     flag_gate_threshold:  # decode threshold for flag class K-1
     epsilon: 
     selection_output: 
+    # Validation score for Optuna / early stopping (protection_selection_score)
+    selection_score:
+      balanced_accuracy: 
+      macro_f1: 
+      accuracy: 
+      within_one: 
+      flag_recall: 
 
 optuna:
   n_trials:

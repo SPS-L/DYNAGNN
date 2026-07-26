@@ -16,7 +16,7 @@ Helpers to load pair-aware deployment checkpoints and run a single-scenario forw
 
 ## Checkpoint requirements
 
-Expects `model_type == "pair_aware_gine"` and fields including: `model_state_dict`, `hparams`, vocab sizes/maps, `selected_output`, `cuts`, log-KPI mean/std, `epsilon`, `gate_threshold`.
+Expects `model_type == "pair_aware_gine"` and fields including: `model_state_dict`, `hparams`, vocab sizes/maps, `selected_output`, `cuts`, log-KPI mean/std, `epsilon`, `gate_threshold`, and `flag_gate_threshold` (legacy checkpoints may store `class5_gate_threshold`).
 
 ## Per-scenario prep
 
@@ -26,7 +26,7 @@ Before the forward pass, inference attaches:
 - contingency token for the scenario event id;
 - event node/edge masks from the graph’s event location (same rules as training).
 
-Decoding follows `selected_output` (`class`, `gated`, or `log_kpi`). External output remains one integer class per target component.
+Decoding follows `selected_output` (`class`, `gated`, or `log_kpi`). The flag gate threshold from the checkpoint decides class `K−1`; external output remains one integer class per target component.
 
 ## Related modules
 

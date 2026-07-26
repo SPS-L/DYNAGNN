@@ -96,30 +96,41 @@ Example (for **bus**, use **Type** `bus` in both cases; **Fault name** is a `bus
 
 These keys are **not** Optuna-tuned. They fix how the training objective is built and how predictions are decoded / selected.
 
-Each forward pass produces three heads: class logits, an inactive (class-0) gate logit, and a standardized log-KPI prediction. Training minimizes the following scalar loss with **AdamW** (gradient-based optimization on mini-batches):
+Each forward pass produces four heads: severity-class logits (`0 … K−2`), a binary **flag** gate for class `K−1`, an inactive (class-0) gate on the non-flag branch, and a standardized log-KPI prediction. Training minimizes the following scalar loss with **AdamW** (gradient-based optimization on mini-batches):
 
-$$ \Large \mathcal{L} = w_{\mathrm{cls}} \cdot \mathcal{L}_{\mathrm{CE}} + w_{\mathrm{reg}} \cdot \mathcal{L}_{\mathrm{Huber}} + w_{\mathrm{gate}} \cdot \mathcal{L}_{\mathrm{BCE}} + w_{\mathrm{ord}} \cdot \mathcal{L}_{\mathrm{CDF}} $$
+$$ \Large \mathcal{L} = w_{\mathrm{cls}} \cdot \mathcal{L}_{\mathrm{CE}} + w_{\mathrm{reg}} \cdot \mathcal{L}_{\mathrm{Huber}} + w_{\mathrm{gate}} \cdot \mathcal{L}_{\mathrm{BCE0}} + w_{\mathrm{flag}} \cdot \mathcal{L}_{\mathrm{BCE,flag}} + w_{\mathrm{ord}} \cdot \mathcal{L}_{\mathrm{CDF}} $$
 
 where the config keys map as:
 
 | Config key | Symbol | Term |
 |------------|--------|------|
-| `classification_weight` | $w_{\mathrm{cls}}$ | Multi-class cross-entropy $\mathcal{L}_{\mathrm{CE}}$ on all labels $0,\ldots,C-1$ ($C =$ `model.num_classes`) |
+| `classification_weight` | $w_{\mathrm{cls}}$ | Cross-entropy $\mathcal{L}_{\mathrm{CE}}$ on severity labels $0,\ldots,K-2$ only |
 | `regression_weight` | $w_{\mathrm{reg}}$ | Smooth L1 (Huber) $\mathcal{L}_{\mathrm{Huber}}$ on standardized $\log_{10}(\mathrm{KPI}+\varepsilon)$; finite KPI targets only (flag class has none) |
-| `inactive_gate_weight` | $w_{\mathrm{gate}}$ | Binary cross-entropy $\mathcal{L}_{\mathrm{BCE}}$ of the gate vs “true class is 0” |
-| `ordinal_weight` | $w_{\mathrm{ord}}$ | Ordinal CDF consistency $\mathcal{L}_{\mathrm{CDF}}$ on the class logits |
+| `inactive_gate_weight` | $w_{\mathrm{gate}}$ | Binary cross-entropy $\mathcal{L}_{\mathrm{BCE0}}$ of the inactive gate vs “true severity class is 0” |
+| `flag_gate_weight` | $w_{\mathrm{flag}}$ | Binary cross-entropy $\mathcal{L}_{\mathrm{BCE,flag}}$ of the flag gate vs “true class is $K-1$” |
+| `ordinal_weight` | $w_{\mathrm{ord}}$ | Ordinal CDF consistency $\mathcal{L}_{\mathrm{CDF}}$ on severity logits only |
 
 The other `pair_aware` keys do **not** enter $\mathcal{L}$ as scalar multipliers:
 
 | Key | Where it goes |
 |-----|----------------|
-| `class_weight_mode` | Builds per-class weights inside $\mathcal{L}_{\mathrm{CE}}$ (e.g. `inverse`, `sqrt_inverse`) |
-| `gate_pos_weight_mode` | Builds the positive-class weight inside $\mathcal{L}_{\mathrm{BCE}}$ (e.g. `balanced`) |
+| `class_weight_mode` | Builds per-class weights inside $\mathcal{L}_{\mathrm{CE}}$ for severity classes (e.g. `inverse`, `sqrt_inverse`) |
+| `gate_pos_weight_mode` | Positive-class weight inside $\mathcal{L}_{\mathrm{BCE0}}$ (e.g. `balanced`) |
+| `flag_gate_pos_weight_mode` | Positive-class weight inside $\mathcal{L}_{\mathrm{BCE,flag}}$ (e.g. `balanced`) |
+| `flag_pos_weight_multiplier` | Scales the balanced flag-gate pos-weight |
 | `epsilon` | $\varepsilon$ in $\log_{10}(\mathrm{KPI}+\varepsilon)$ when forming regression targets (and when inverting log-KPI decode) |
-| `gate_threshold` | Decode only: treat as class 0 when $\sigma(\mathrm{gate})\ge$ threshold (`gated` path) |
+| `gate_threshold` | Decode only: treat as class 0 when $\sigma(\mathrm{inactive})\ge$ threshold (`gated` path) |
+| `flag_gate_threshold` | Decode only: predict flag class $K-1$ when $\sigma(\mathrm{flag})\ge$ threshold |
 | `selection_output` | Which decode path is scored for checkpoint / Optuna selection: `auto`, `class`, `gated`, or `log_kpi` |
+| `selection_score.*` | Weights of the validation **protection selection score** (see below) |
 
-**Example (Nordic defaults from `Nordic_test_setup.py`):** $w_{\mathrm{cls}}=1.0$, $w_{\mathrm{reg}}=0.30$, $w_{\mathrm{gate}}=0.15$, $w_{\mathrm{ord}}=0.15$, `class_weight_mode: inverse`, `epsilon: 1.0e-10`, `selection_output: class`.
+**Protection selection score** (Optuna / early stopping; not backpropagated):
+
+$$ \mathrm{score} = w_{\mathrm{ba}}\cdot\mathrm{bal\_acc} + w_{\mathrm{f1}}\cdot\mathrm{macro\_F1} + w_{\mathrm{acc}}\cdot\mathrm{acc} + w_{\mathrm{w1}}\cdot\mathrm{within\_1} + w_{\mathrm{fr}}\cdot\mathrm{flag\_recall} $$
+
+configured under `training.pair_aware.selection_score` (`balanced_accuracy`, `macro_f1`, `accuracy`, `within_one`, `flag_recall`).
+
+**Example (Nordic defaults from `Nordic_test_setup.py`):** $w_{\mathrm{cls}}=1.0$, $w_{\mathrm{reg}}=0.30$, $w_{\mathrm{gate}}=0.20$, $w_{\mathrm{flag}}=0.50$, $w_{\mathrm{ord}}=0.10$, `class_weight_mode: inverse`, `epsilon: 1.0e-10`, `selection_output: class`, selection score weights `0.30 / 0.25 / 0.15 / 0.10 / 0.20`.
 
 ### `optuna.hparams` (tuned)
 
@@ -251,51 +262,43 @@ The Nordic example contains **35 operating points** (`operating_point_1` … `op
 
 The table below summarizes each OP. **Target load (MW)** is the total active load after applying the scaling described in [Load-scaling method](#load-scaling-method) and running a Dynawo equilibrium; the reference case has total active load **≈ 11060.6 MW**.
 
-| OP | Split | Band | Pattern | Target load (MW) |
-|---:|---|---|---|---:|
-| 1 | test | low | uniform | 9016.9 |
-| 2 | train | medium | central_up | 9780.3 |
-| 3 | train | low | north_up | 8964.4 |
-| 4 | train | high | south_up | 10634.7 |
-| 5 | train | high | north_central_stress | 10841.2 |
-| 6 | test | medium | mixed | 10038.0 |
-| 7 | validation | low | uniform | 8986.2 |
-| 8 | validation | medium | central_up | 9655.3 |
-| 9 | train | high | north_up | 11140.3 |
-| 10 | train | high | south_up | 10675.0 |
-| 11 | train | high | north_central_stress | 10750.3 |
-| 12 | train | low | mixed | 8962.7 |
-| 13 | train | medium | uniform | 9851.1 |
-| 14 | train | high | central_up | 10392.0 |
-| 15 | train | low | north_up | 9091.6 |
-| 16 | validation | high | south_up | 10239.0 |
-| 17 | test | high | north_central_stress | 10719.6 |
-| 18 | train | low | mixed | 8510.6 |
-| 19 | test | low | uniform | 9249.8 |
-| 20 | train | high | central_up | 10701.0 |
-| 21 | train | low | north_up | 8716.4 |
-| 22 | train | low | south_up | 9380.5 |
-| 23 | test | medium | north_central_stress | 10034.1 |
-| 24 | train | medium | mixed | 9766.9 |
-| 25 | train | low | uniform | 9251.0 |
-| 26 | train | high | central_up | 10616.9 |
-| 27 | validation | high | north_up | 10376.1 |
-| 28 | train | medium | south_up | 9827.7 |
-| 29 | train | low | north_central_stress | 9004.1 |
-| 30 | train | high | mixed | 10829.0 |
-| 31 | train | low | uniform | 9161.9 |
-| 32 | validation | medium | central_up | 10316.3 |
-| 33 | train | medium | north_up | 10294.1 |
-| 34 | train | medium | south_up | 10595.8 |
-| 35 | train | low | north_central_stress | 9888.0 |
-
-**Split assignment:** 25 train / 5 validation / 5 test operating points (fixed before load sampling). DYNAGNN’s default Nordic config uses `split_mode: operating_point` with fractions **5/7 · 1/7 · 1/7** (≈ 25 / 5 / 5 OPs for 35 OPs):
-
-```yaml
-training: 0.7142857143   # 5/7
-validation: 0.1428571429 # 1/7
-testing: 0.1428571429    # 1/7
-```
+| OP | Band | Pattern | Target load (MW) |
+|---:|---|---|---:|
+| 1 | low | uniform | 9016.9 |
+| 2 | medium | central_up | 9780.3 |
+| 3 | low | north_up | 8964.4 |
+| 4 | high | south_up | 10634.7 |
+| 5 | high | north_central_stress | 10841.2 |
+| 6 | medium | mixed | 10038.0 |
+| 7 | low | uniform | 8986.2 |
+| 8 | medium | central_up | 9655.3 |
+| 9 | high | north_up | 11140.3 |
+| 10 | high | south_up | 10675.0 |
+| 11 | high | north_central_stress | 10750.3 |
+| 12 | low | mixed | 8962.7 |
+| 13 | medium | uniform | 9851.1 |
+| 14 | high | central_up | 10392.0 |
+| 15 | low | north_up | 9091.6 |
+| 16 | high | south_up | 10239.0 |
+| 17 | high | north_central_stress | 10719.6 |
+| 18 | low | mixed | 8510.6 |
+| 19 | low | uniform | 9249.8 |
+| 20 | high | central_up | 10701.0 |
+| 21 | low | north_up | 8716.4 |
+| 22 | low | south_up | 9380.5 |
+| 23 | medium | north_central_stress | 10034.1 |
+| 24 | medium | mixed | 9766.9 |
+| 25 | low | uniform | 9251.0 |
+| 26 | high | central_up | 10616.9 |
+| 27 | high | north_up | 10376.1 |
+| 28 | medium | south_up | 9827.7 |
+| 29 | low | north_central_stress | 9004.1 |
+| 30 | high | mixed | 10829.0 |
+| 31 | low | uniform | 9161.9 |
+| 32 | medium | central_up | 10316.3 |
+| 33 | medium | north_up | 10294.1 |
+| 34 | medium | south_up | 10595.8 |
+| 35 | low | north_central_stress | 9888.0 |
 
 #### Load-scaling method
 
@@ -425,13 +428,23 @@ training:
   pair_aware:
     classification_weight: 1.0
     regression_weight: 0.30
-    inactive_gate_weight: 0.15
-    ordinal_weight: 0.15
+    inactive_gate_weight: 0.2
+    flag_gate_weight: 0.50
+    ordinal_weight: 0.1
     class_weight_mode: inverse
     gate_pos_weight_mode: balanced
+    flag_gate_pos_weight_mode: balanced
+    flag_pos_weight_multiplier: 1.0
     gate_threshold: 0.50
+    flag_gate_threshold: 0.35
     epsilon: 1.0e-10
     selection_output: class
+    selection_score:
+      balanced_accuracy: 0.30
+      macro_f1: 0.25
+      accuracy: 0.15
+      within_one: 0.10
+      flag_recall: 0.20
 
 optuna:
   n_trials: 15
@@ -478,7 +491,7 @@ inference:
   initialization_duration: 10.0  # steady-state run before graph build; use 0 to skip
 ```
 
-With `model.num_classes = len(cuts) + 2`, the highest class index is the action/disconnection **flag** class. Voltage and Spower are tuned independently with Optuna; validation checkpoints maximize a balanced multi-class selection score (see [`src/training.md`](src/training.md)). After the search, best hparams are **retrained on train+val** for the winning trial’s `best_epoch` epochs; that model is written under `model/<study_name>/` as `voltage_best_model.pt` and `spower_best_model.pt` and evaluated on test.
+With `model.num_classes = len(cuts) + 2`, the highest class index is the action/disconnection **flag** class (`K−1`). The model learns a separate binary flag gate for that class. Voltage and Spower are tuned independently with Optuna; validation checkpoints maximize the configurable [protection selection score](src/training.md#training-selection-score). After the search, best hparams are **retrained on train+val** for the winning trial’s `best_epoch` epochs; that model is written under `model/<study_name>/` as `voltage_best_model.pt` and `spower_best_model.pt` and evaluated on test.
 
 **Example (Nordic):** four cuts → classes 0–4 by KPI magnitude, flag class 5, `num_classes: 6`.
 
