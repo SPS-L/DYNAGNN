@@ -115,22 +115,25 @@ The other `pair_aware` keys do **not** enter $\mathcal{L}$ as scalar multipliers
 | Key | Where it goes |
 |-----|----------------|
 | `class_weight_mode` | Builds per-class weights inside $\mathcal{L}_{\mathrm{CE}}$ for severity classes (e.g. `inverse`, `sqrt_inverse`) |
-| `gate_pos_weight_mode` | Positive-class weight inside $\mathcal{L}_{\mathrm{BCE0}}$ (e.g. `balanced`) |
+| `inactive_gate_pos_weight_mode` | Positive-class weight inside $\mathcal{L}_{\mathrm{BCE0}}$ (e.g. `balanced`) |
 | `flag_gate_pos_weight_mode` | Positive-class weight inside $\mathcal{L}_{\mathrm{BCE,flag}}$ (e.g. `balanced`) |
 | `flag_pos_weight_multiplier` | Scales the balanced flag-gate pos-weight |
 | `epsilon` | $\varepsilon$ in $\log_{10}(\mathrm{KPI}+\varepsilon)$ when forming regression targets (and when inverting log-KPI decode) |
-| `gate_threshold` | Decode only: treat as class 0 when $\sigma(\mathrm{inactive})\ge$ threshold (`gated` path) |
-| `flag_gate_threshold` | Decode only: predict flag class $K-1$ when $\sigma(\mathrm{flag})\ge$ threshold |
+| `inactive_gate_threshold` | Initial decode threshold for class 0 (`gated` path); jointly calibrated on val at end of each Optuna trial |
+| `flag_gate_threshold` | Initial decode threshold for flag class $K-1$; jointly calibrated with the inactive gate |
+| `threshold_calibration.*` | Grid for the end-of-trial joint sweep (`inactive_gate_{low,high,step}`, `flag_gate_{low,high,step}`) |
 | `selection_output` | Which decode path is scored for checkpoint / Optuna selection: `auto`, `class`, `gated`, or `log_kpi` |
 | `selection_score.*` | Weights of the validation **protection selection score** (see below) |
 
-**Protection selection score** (Optuna / early stopping; not backpropagated):
+**Protection selection score** (Optuna trial ranking / early stopping; not backpropagated):
 
 $$ \mathrm{score} = w_{\mathrm{ba}}\cdot\mathrm{bal\_acc} + w_{\mathrm{f1}}\cdot\mathrm{macro\_F1} + w_{\mathrm{acc}}\cdot\mathrm{acc} + w_{\mathrm{w1}}\cdot\mathrm{within\_1} + w_{\mathrm{fr}}\cdot\mathrm{flag\_recall} $$
 
 configured under `training.pair_aware.selection_score` (`balanced_accuracy`, `macro_f1`, `accuracy`, `within_one`, `flag_recall`).
 
-**Example (Nordic defaults from `Nordic_test_setup.py`):** $w_{\mathrm{cls}}=1.0$, $w_{\mathrm{reg}}=0.30$, $w_{\mathrm{gate}}=0.20$, $w_{\mathrm{flag}}=0.50$, $w_{\mathrm{ord}}=0.10$, `class_weight_mode: inverse`, `epsilon: 1.0e-10`, `selection_output: class`, selection score weights `0.30 / 0.25 / 0.15 / 0.10 / 0.20`.
+**Threshold calibration (per Optuna trial):** epochs use the config initial thresholds for decode / early stopping. After the best epoch is chosen, both gate thresholds are swept jointly on validation predictions; the best `protection_selection_score` is the **trial objective**. Calibrated thresholds (and `selected_output`) are stored on the trial and copied into the deployment `.pt`. Final train+val retrain **reuses** those thresholds and does **not** sweep again.
+
+**Example (Nordic defaults from `Nordic_test_setup.py`):** $w_{\mathrm{cls}}=1.0$, $w_{\mathrm{reg}}=0.30$, $w_{\mathrm{gate}}=0.20$, $w_{\mathrm{flag}}=0.50$, $w_{\mathrm{ord}}=0.10$, `class_weight_mode: sqrt_inverse`, `epsilon: 1.0e-10`, `selection_output: auto`, selection score weights `0.30 / 0.25 / 0.15 / 0.10 / 0.20`.
 
 ### `optuna.hparams` (tuned)
 
@@ -432,11 +435,18 @@ training:
     flag_gate_weight: 0.50
     ordinal_weight: 0.1
     class_weight_mode: inverse
-    gate_pos_weight_mode: balanced
+    inactive_gate_pos_weight_mode: balanced
     flag_gate_pos_weight_mode: balanced
     flag_pos_weight_multiplier: 1.0
-    gate_threshold: 0.50
+    inactive_gate_threshold: 0.50
     flag_gate_threshold: 0.35
+    threshold_calibration:
+      inactive_gate_low: 0.05
+      inactive_gate_high: 0.95
+      inactive_gate_step: 0.05
+      flag_gate_low: 0.05
+      flag_gate_high: 0.95
+      flag_gate_step: 0.05
     epsilon: 1.0e-10
     selection_output: class
     selection_score:

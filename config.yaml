@@ -46,11 +46,19 @@ training:
     flag_gate_weight:  # BCE for flag class K-1 (disconnected/controlled)
     ordinal_weight: 
     class_weight_mode: 
-    gate_pos_weight_mode: 
+    inactive_gate_pos_weight_mode: 
     flag_gate_pos_weight_mode:  # none | balanced
     flag_pos_weight_multiplier:  # scales balanced flag-gate pos_weight
-    gate_threshold:
-    flag_gate_threshold:  # decode threshold for flag class K-1
+    inactive_gate_threshold:  # initial decode threshold (training / early stopping)
+    flag_gate_threshold:  # initial decode threshold for flag class K-1
+    # End-of-trial joint val sweep → trial score + checkpoint thresholds (not re-swept on retrain)
+    threshold_calibration:
+      inactive_gate_low: 0.05
+      inactive_gate_high: 0.95
+      inactive_gate_step: 0.05
+      flag_gate_low: 0.05
+      flag_gate_high: 0.95
+      flag_gate_step: 0.05
     epsilon: 
     selection_output: 
     # Validation score for Optuna / early stopping (protection_selection_score)

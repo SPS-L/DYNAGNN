@@ -79,7 +79,9 @@ Both call [`pair_aware_training.run_task_training()`](../modules/pair_aware_trai
 | `flag_gate_weight` | BCE gate for flag class `K−1` |
 | `ordinal_weight` | Ordinal CDF consistency on severity logits |
 
-Also fixed: `class_weight_mode`, `gate_pos_weight_mode`, `flag_gate_pos_weight_mode`, `flag_pos_weight_multiplier`, `gate_threshold`, `flag_gate_threshold`, `epsilon`, `selection_output` (`auto` / `class` / `gated` / `log_kpi`), and `selection_score.*`.
+Also fixed: `class_weight_mode`, `inactive_gate_pos_weight_mode`, `flag_gate_pos_weight_mode`, `flag_pos_weight_multiplier`, initial `inactive_gate_threshold` / `flag_gate_threshold`, optional `threshold_calibration.*` grid, `epsilon`, `selection_output` (`auto` / `class` / `gated` / `log_kpi`), and `selection_score.*`.
+
+At the end of each Optuna trial, inactive and flag gate thresholds are swept jointly on validation; that calibrated score ranks the trial. The winning trial’s thresholds are written into the deployment checkpoint and reused on train+val retrain (no second sweep).
 
 ### Optuna (`optuna.hparams`)
 

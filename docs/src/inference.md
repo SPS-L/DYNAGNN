@@ -57,7 +57,7 @@ Under `<case-dir>/dynagnn_output/`:
 4. Load **scalers** and **pair-aware GINE** checkpoints from `<data.path>/model/<study_name>/` (`optuna.study_name` in `config.yaml`).
 5. For each `events.csv` row: clone the base graph, resolve the event, set `fault_on`, append `dz_fault`, scale features, attach node/contingency tokens and event masks from the checkpoint vocabularies, run voltage and spower forward passes, decode to one class per target component.
 
-Decoding follows the checkpoint’s `selected_output` (`class`, `gated`, or `log_kpi`). The flag class (`K−1`) is decided by the learned flag gate using `flag_gate_threshold` from the checkpoint (legacy key: `class5_gate_threshold`).
+Decoding follows the checkpoint’s `selected_output` (`class`, `gated`, or `log_kpi`). The flag class (`K−1`) is decided by the learned flag gate using `flag_gate_threshold` from the checkpoint (legacy key: `class5_gate_threshold`). The inactive-gate threshold for the `gated` path is `inactive_gate_threshold` (legacy key: `gate_threshold`).
 
 ## Event lookup and `fault_on` placement
 

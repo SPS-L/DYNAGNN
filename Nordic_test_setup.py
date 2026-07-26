@@ -55,17 +55,24 @@ training:
   pair_aware:
     classification_weight: 1.0
     regression_weight: 0.30
-    inactive_gate_weight: 0.2
+    inactive_gate_weight: 0.20
     flag_gate_weight: 0.50
-    ordinal_weight: 0.1
-    class_weight_mode: inverse
-    gate_pos_weight_mode: balanced
+    ordinal_weight: 0.10
+    epsilon: 1.0e-10
+    inactive_gate_threshold: 0.50
+    flag_gate_threshold: 0.35
+    threshold_calibration:
+      inactive_gate_low: 0.05
+      inactive_gate_high: 0.95
+      inactive_gate_step: 0.05
+      flag_gate_low: 0.05
+      flag_gate_high: 0.95
+      flag_gate_step: 0.05
+    class_weight_mode: sqrt_inverse
+    inactive_gate_pos_weight_mode: balanced
     flag_gate_pos_weight_mode: balanced
     flag_pos_weight_multiplier: 1.0
-    gate_threshold: 0.50
-    flag_gate_threshold: 0.35
-    epsilon: 1.0e-10
-    selection_output: class
+    selection_output: auto
     selection_score:
       balanced_accuracy: 0.30
       macro_f1: 0.25

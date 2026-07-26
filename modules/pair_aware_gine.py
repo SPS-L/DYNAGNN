@@ -534,7 +534,7 @@ def _run_epoch(
     log_std: float,
     cuts: np.ndarray,
     epsilon: float,
-    gate_threshold: float,
+    inactive_gate_threshold: float,
     flag_gate_threshold: float,
     target_mask_attr: str,
     num_classes: int,
@@ -662,7 +662,7 @@ def _run_epoch(
                 detached_severity,
                 detached_inactive,
                 detached_flag,
-                gate_threshold,
+                inactive_gate_threshold,
                 flag_gate_threshold,
                 flag_cls,
             )
@@ -716,7 +716,7 @@ def _run_epoch(
                     detached_severity[:, 1:].argmax(dim=1).cpu().numpy() + 1
                 )
                 gated_base_np = np.where(
-                    inactive_probabilities >= float(gate_threshold),
+                    inactive_probabilities >= float(inactive_gate_threshold),
                     0,
                     active_severity_np,
                 ).astype(np.int64)
@@ -840,7 +840,7 @@ def compute_class_weights(
     return weights.float().to(device)
 
 
-def compute_gate_pos_weight(
+def compute_inactive_gate_pos_weight(
     loader,
     mode: str,
     device: torch.device,
@@ -853,7 +853,7 @@ def compute_gate_pos_weight(
         return None
     if mode != "balanced":
         raise ValueError(
-            f"Unsupported gate_pos_weight_mode={mode!r}; expected none or balanced"
+            f"Unsupported inactive_gate_pos_weight_mode={mode!r}; expected none or balanced"
         )
     flag_cls = flag_class_index(num_classes)
     inactive = 0
@@ -1092,12 +1092,157 @@ def _log_test_breakdown(
     if offset_bits:
         logger.info("Non-zero offset rates: %s", "  ".join(offset_bits))
 
+
+def _threshold_grid(low: float, high: float, step: float) -> np.ndarray:
+    if step <= 0:
+        raise ValueError(f"threshold grid step must be > 0, got {step}")
+    values = np.arange(float(low), float(high) + 0.5 * float(step), float(step))
+    values = values[(values >= float(low) - 1e-12) & (values <= float(high) + 1e-12)]
+    return np.unique(np.round(values, 10))
+
+
+def calibrate_gate_thresholds(
+    predictions: list[dict] | pd.DataFrame,
+    *,
+    num_classes: int,
+    selection_output: Optional[str],
+    selection_score_weights: SelectionScoreWeights,
+    inactive_gate_low: float = 0.05,
+    inactive_gate_high: float = 0.95,
+    inactive_gate_step: float = 0.05,
+    flag_gate_low: float = 0.05,
+    flag_gate_high: float = 0.95,
+    flag_gate_step: float = 0.05,
+) -> dict:
+    """Jointly sweep inactive/flag gate thresholds on validation predictions.
+
+    Returns the thresholds (and decode path) that maximize protection_selection_score.
+    """
+    frame = pd.DataFrame(predictions)
+    if frame.empty:
+        raise RuntimeError("Cannot calibrate thresholds on empty validation predictions")
+    required = {
+        "true_class",
+        "flag_probability",
+        "inactive_probability",
+        "base_class_prediction",
+        "base_log_kpi_prediction",
+    }
+    missing = sorted(required.difference(frame.columns))
+    if missing:
+        raise KeyError(f"Validation predictions missing columns for calibration: {missing}")
+
+    flag_cls = flag_class_index(num_classes)
+    y_true = frame["true_class"].to_numpy(dtype=np.int64)
+    flag_probability = frame["flag_probability"].to_numpy(dtype=np.float64)
+    inactive_probability = frame["inactive_probability"].to_numpy(dtype=np.float64)
+    class_pred = frame["base_class_prediction"].to_numpy(dtype=np.int64)
+    log_pred = frame["base_log_kpi_prediction"].to_numpy(dtype=np.int64)
+
+    severity_cols = [f"class_probability_{cls}" for cls in range(flag_cls)]
+    if all(col in frame.columns for col in severity_cols) and flag_cls > 1:
+        severity_probs = frame[severity_cols].to_numpy(dtype=np.float64)
+        active_pred = severity_probs[:, 1:].argmax(axis=1).astype(np.int64) + 1
+    else:
+        # Fallback if severity probabilities are unavailable.
+        active_pred = np.maximum(class_pred, 1).astype(np.int64)
+
+    inactive_grid = _threshold_grid(inactive_gate_low, inactive_gate_high, inactive_gate_step)
+    flag_grid = _threshold_grid(flag_gate_low, flag_gate_high, flag_gate_step)
+    modes = (
+        [selection_output]
+        if selection_output in {"class", "gated", "log_kpi"}
+        else ["class", "gated", "log_kpi"]
+    )
+
+    best = {
+        "score": -float("inf"),
+        "inactive_gate_threshold": float(inactive_grid[len(inactive_grid) // 2]),
+        "flag_gate_threshold": float(flag_grid[len(flag_grid) // 2]),
+        "selected_output": modes[0],
+        "metrics": None,
+    }
+    sweep_rows: list[dict] = []
+
+    for inactive_t in inactive_grid:
+        gated_base = np.where(
+            inactive_probability >= float(inactive_t),
+            0,
+            active_pred,
+        ).astype(np.int64)
+        for flag_t in flag_grid:
+            flag_mask = flag_probability >= float(flag_t)
+            mode_scores = {}
+            mode_metrics = {}
+            for mode in modes:
+                if mode == "class":
+                    pred = class_pred.copy()
+                elif mode == "gated":
+                    pred = gated_base.copy()
+                elif mode == "log_kpi":
+                    pred = log_pred.copy()
+                else:
+                    raise ValueError(f"Unsupported selection_output: {mode!r}")
+                pred = pred.copy()
+                pred[flag_mask] = flag_cls
+                metrics = classification_metrics(y_true, pred, num_classes)
+                metrics["flag_recall"] = float(metrics["class_recall"][flag_cls])
+                metrics["flag_precision"] = float(metrics["class_precision"][flag_cls])
+                metrics["flag_f1"] = float(metrics["class_f1"][flag_cls])
+                score = protection_selection_score(metrics, selection_score_weights)
+                metrics["protection_selection_score"] = score
+                mode_scores[mode] = score
+                mode_metrics[mode] = metrics
+                sweep_rows.append(
+                    {
+                        "inactive_gate_threshold": float(inactive_t),
+                        "flag_gate_threshold": float(flag_t),
+                        "selected_output": mode,
+                        "protection_selection_score": float(score),
+                        "flag_recall": float(metrics["flag_recall"]),
+                        "macro_f1": float(metrics["macro_f1"]),
+                        "balanced_accuracy": float(metrics["balanced_accuracy"]),
+                        "accuracy": float(metrics["accuracy"]),
+                        "within_one_accuracy": float(metrics["within_one_accuracy"]),
+                    }
+                )
+
+            if selection_output in {"class", "gated", "log_kpi"}:
+                chosen_mode = selection_output
+            else:
+                chosen_mode = max(mode_scores, key=mode_scores.get)
+            chosen_score = float(mode_scores[chosen_mode])
+            if chosen_score > best["score"] + 1.0e-12:
+                best = {
+                    "score": chosen_score,
+                    "inactive_gate_threshold": float(inactive_t),
+                    "flag_gate_threshold": float(flag_t),
+                    "selected_output": chosen_mode,
+                    "metrics": mode_metrics[chosen_mode],
+                }
+
+    if best["metrics"] is None:
+        raise RuntimeError("Threshold calibration failed to select a validation score")
+
+    return {
+        "inactive_gate_threshold": float(best["inactive_gate_threshold"]),
+        "flag_gate_threshold": float(best["flag_gate_threshold"]),
+        "selected_output": str(best["selected_output"]),
+        "best_validation_score": float(best["score"]),
+        "metrics": best["metrics"],
+        "sweep": sweep_rows,
+    }
+
+
 def _save_validation_outputs(
     artifact_dir: Path,
     result: dict,
     selected_output: str,
     num_classes: int,
+    inactive_gate_threshold: float,
     flag_gate_threshold: float,
+    *,
+    calibrated: bool = False,
 ) -> Path:
     validation_dir = artifact_dir / "validation_outputs"
     validation_dir.mkdir(parents=True, exist_ok=True)
@@ -1105,11 +1250,18 @@ def _save_validation_outputs(
     path = validation_dir / "validation_predictions.csv"
     predictions.to_csv(path, index=False)
     metrics = result[f"full_class_{selected_output}"]
-    (validation_dir / "validation_metrics_at_training_threshold.json").write_text(
+    metrics_name = (
+        "validation_metrics_at_calibrated_threshold.json"
+        if calibrated
+        else "validation_metrics_at_training_threshold.json"
+    )
+    (validation_dir / metrics_name).write_text(
         json.dumps(
             {
                 "selected_output": selected_output,
+                "inactive_gate_threshold": float(inactive_gate_threshold),
                 "flag_gate_threshold": float(flag_gate_threshold),
+                "calibrated": bool(calibrated),
                 "full_class": metrics,
             },
             indent=2,
@@ -1135,20 +1287,22 @@ def run_pair_aware_training(
     log_std: float,
     cuts: np.ndarray,
     epsilon: float,
-    gate_threshold: float,
+    inactive_gate_threshold: float,
     flag_gate_threshold: float,
     epochs: int,
     patience: int,
     fixed_epochs: Optional[int],
     selection_output: Optional[str],
     class_weight_mode: str,
-    gate_pos_weight_mode: str,
+    inactive_gate_pos_weight_mode: str,
     flag_gate_pos_weight_mode: str,
     flag_pos_weight_multiplier: float,
     selection_score_weights: SelectionScoreWeights,
     num_classes: int,
     logger: logging.Logger,
     trial=None,
+    calibrate_thresholds: Optional[bool] = None,
+    threshold_calibration: Optional[dict] = None,
 ) -> dict:
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
@@ -1169,8 +1323,8 @@ def run_pair_aware_training(
     class_weights = compute_class_weights(
         train_loader, class_weight_mode, device, target_mask_attr, num_classes
     )
-    inactive_pos_weight = compute_gate_pos_weight(
-        train_loader, gate_pos_weight_mode, device, target_mask_attr, num_classes
+    inactive_pos_weight = compute_inactive_gate_pos_weight(
+        train_loader, inactive_gate_pos_weight_mode, device, target_mask_attr, num_classes
     )
     flag_pos_weight = compute_flag_pos_weight(
         train_loader,
@@ -1195,9 +1349,13 @@ def run_pair_aware_training(
             None if inactive_pos_weight is None else [round(float(v), 4) for v in inactive_pos_weight.detach().cpu().tolist()],
         )
         logger.info(
-            "Flag-gate pos_weight: %s | threshold=%.3f",
-            None if flag_pos_weight is None else [round(float(v), 4) for v in flag_pos_weight.detach().cpu().tolist()],
+            "Inactive/flag gate thresholds (training decode): %.3f / %.3f",
+            float(inactive_gate_threshold),
             float(flag_gate_threshold),
+        )
+        logger.info(
+            "Flag-gate pos_weight: %s",
+            None if flag_pos_weight is None else [round(float(v), 4) for v in flag_pos_weight.detach().cpu().tolist()],
         )
         logger.info("Selection score weights: %s", asdict(selection_score_weights))
     else:
@@ -1217,6 +1375,14 @@ def run_pair_aware_training(
     total_epochs = int(fixed_epochs) if fixed_epochs is not None else int(epochs)
     stopped_early = False
     pruned = False
+    initial_inactive_gate_threshold = float(inactive_gate_threshold)
+    initial_flag_gate_threshold = float(flag_gate_threshold)
+    do_calibrate = (
+        bool(calibrate_thresholds)
+        if calibrate_thresholds is not None
+        else (validation_loader is not None and fixed_epochs is None)
+    )
+    calib_cfg = dict(threshold_calibration or {})
 
     for epoch in range(1, total_epochs + 1):
         train_result = _run_epoch(
@@ -1232,7 +1398,7 @@ def run_pair_aware_training(
             log_std=log_std,
             cuts=cuts,
             epsilon=epsilon,
-            gate_threshold=gate_threshold,
+            inactive_gate_threshold=inactive_gate_threshold,
             flag_gate_threshold=flag_gate_threshold,
             target_mask_attr=target_mask_attr,
             selection_score_weights=selection_score_weights,
@@ -1257,7 +1423,7 @@ def run_pair_aware_training(
                 log_std=log_std,
                 cuts=cuts,
                 epsilon=epsilon,
-                gate_threshold=gate_threshold,
+                inactive_gate_threshold=inactive_gate_threshold,
                 flag_gate_threshold=flag_gate_threshold,
                 target_mask_attr=target_mask_attr,
                 selection_score_weights=selection_score_weights,
@@ -1297,7 +1463,7 @@ def run_pair_aware_training(
             marker = "*" if improved else " "
             selected_metrics = val_result[f"full_class_{selected}"]
             logger.info(
-                "Epoch %03d %s | train=%.4f | val_loss=%.4f | val class=%.4f gated=%.4f logKPI=%.4f | selected=%s %.4f | flag R/P/F1=%.3f/%.3f/%.3f",
+                "Epoch %03d %s | train_loss=%.4f | val_loss=%.4f | val class=%.4f inactive_gate=%.4f logKPI=%.4f flag_gate=%.4f | selected=%s %.4f",
                 epoch,
                 marker,
                 train_result["loss"]["total"],
@@ -1305,11 +1471,9 @@ def run_pair_aware_training(
                 float(candidates["class"]),
                 float(candidates["gated"]),
                 float(candidates["log_kpi"]),
+                float(selected_metrics["flag_recall"]),
                 selected,
                 score,
-                float(selected_metrics["flag_recall"]),
-                float(selected_metrics["flag_precision"]),
-                float(selected_metrics["flag_f1"]),
             )
             history.append(row)
 
@@ -1354,15 +1518,65 @@ def run_pair_aware_training(
         best_epoch = int(fixed_epochs)
         best_output = selection_output or "class"
 
+    calibrated = False
+    if do_calibrate and validation_loader is not None and not pruned:
+        pre_calib_result = _run_epoch(
+            model=model,
+            loader=validation_loader,
+            device=device,
+            optimizer=None,
+            class_weights=class_weights,
+            inactive_pos_weight=inactive_pos_weight,
+            flag_pos_weight=flag_pos_weight,
+            loss_weights=loss_weights,
+            log_mean=log_mean,
+            log_std=log_std,
+            cuts=cuts,
+            epsilon=epsilon,
+            inactive_gate_threshold=initial_inactive_gate_threshold,
+            flag_gate_threshold=initial_flag_gate_threshold,
+            target_mask_attr=target_mask_attr,
+            selection_score_weights=selection_score_weights,
+            num_classes=num_classes,
+            collect_predictions=True,
+        )
+        calibration = calibrate_gate_thresholds(
+            pre_calib_result.get("predictions", []),
+            num_classes=num_classes,
+            selection_output=selection_output,
+            selection_score_weights=selection_score_weights,
+            inactive_gate_low=float(calib_cfg.get("inactive_gate_low", 0.05)),
+            inactive_gate_high=float(calib_cfg.get("inactive_gate_high", 0.95)),
+            inactive_gate_step=float(calib_cfg.get("inactive_gate_step", 0.05)),
+            flag_gate_low=float(calib_cfg.get("flag_gate_low", 0.05)),
+            flag_gate_high=float(calib_cfg.get("flag_gate_high", 0.95)),
+            flag_gate_step=float(calib_cfg.get("flag_gate_step", 0.05)),
+        )
+        inactive_gate_threshold = float(calibration["inactive_gate_threshold"])
+        flag_gate_threshold = float(calibration["flag_gate_threshold"])
+        best_output = str(calibration["selected_output"])
+        best_score = float(calibration["best_validation_score"])
+        calibrated = True
+        logger.info(
+            "Joint threshold calibration | inactive=%.3f→%.3f | flag=%.3f→%.3f | decode=%s | val=%.4f",
+            initial_inactive_gate_threshold,
+            inactive_gate_threshold,
+            initial_flag_gate_threshold,
+            flag_gate_threshold,
+            best_output,
+            best_score,
+        )
+
     if trial_label is not None and not pruned:
         logger.info(
-            "Trial %d finished | trained_epochs=%d | best_epoch=%d | best_val=%.4f [%s]%s",
+            "Trial %d finished | trained_epochs=%d | best_epoch=%d | best_val=%.4f [%s]%s%s",
             trial_label,
             len(history),
             best_epoch,
             best_score if best_score != -float("inf") else float("nan"),
             best_output,
             " | early_stop" if stopped_early else "",
+            " | calibrated" if calibrated else "",
         )
 
     artifact_dir = Path(output_dir)
@@ -1384,8 +1598,11 @@ def run_pair_aware_training(
                 "flag_handling": "separate learned binary gate",
                 "cuts": cuts.tolist(),
                 "epsilon": epsilon,
-                "gate_threshold": gate_threshold,
+                "initial_inactive_gate_threshold": initial_inactive_gate_threshold,
+                "initial_flag_gate_threshold": initial_flag_gate_threshold,
+                "inactive_gate_threshold": inactive_gate_threshold,
                 "flag_gate_threshold": flag_gate_threshold,
+                "thresholds_calibrated": calibrated,
                 "selection_score_weights": asdict(selection_score_weights),
             },
             indent=2,
@@ -1399,6 +1616,11 @@ def run_pair_aware_training(
         "selected_output": best_output,
         "best_validation_score": None if best_score == -float("inf") else float(best_score),
         "model_state_path": str(artifact_dir / "model_state.pt"),
+        "inactive_gate_threshold": float(inactive_gate_threshold),
+        "flag_gate_threshold": float(flag_gate_threshold),
+        "initial_inactive_gate_threshold": float(initial_inactive_gate_threshold),
+        "initial_flag_gate_threshold": float(initial_flag_gate_threshold),
+        "thresholds_calibrated": bool(calibrated),
     }
 
     if validation_loader is not None:
@@ -1415,20 +1637,27 @@ def run_pair_aware_training(
             log_std=log_std,
             cuts=cuts,
             epsilon=epsilon,
-            gate_threshold=gate_threshold,
+            inactive_gate_threshold=inactive_gate_threshold,
             flag_gate_threshold=flag_gate_threshold,
             target_mask_attr=target_mask_attr,
             selection_score_weights=selection_score_weights,
             num_classes=num_classes,
             collect_predictions=True,
         )
+        if calibrated:
+            sweep_path = artifact_dir / "validation_outputs" / "threshold_calibration_sweep.csv"
+            sweep_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(calibration["sweep"]).to_csv(sweep_path, index=False)
+            result["threshold_calibration_sweep_path"] = str(sweep_path)
         result["validation_predictions_path"] = str(
             _save_validation_outputs(
                 artifact_dir,
                 validation_result,
                 best_output,
                 num_classes,
+                inactive_gate_threshold,
                 flag_gate_threshold,
+                calibrated=calibrated,
             )
         )
 
@@ -1446,7 +1675,7 @@ def run_pair_aware_training(
             log_std=log_std,
             cuts=cuts,
             epsilon=epsilon,
-            gate_threshold=gate_threshold,
+            inactive_gate_threshold=inactive_gate_threshold,
             flag_gate_threshold=flag_gate_threshold,
             target_mask_attr=target_mask_attr,
             selection_score_weights=selection_score_weights,
@@ -1500,11 +1729,11 @@ def evaluate_saved_pair_aware_model(
     log_std: float,
     cuts: np.ndarray,
     epsilon: float,
-    gate_threshold: float,
+    inactive_gate_threshold: float,
     flag_gate_threshold: float,
     selected_output: str,
     class_weight_mode: str,
-    gate_pos_weight_mode: str,
+    inactive_gate_pos_weight_mode: str,
     flag_gate_pos_weight_mode: str,
     flag_pos_weight_multiplier: float,
     selection_score_weights: SelectionScoreWeights,
@@ -1528,8 +1757,8 @@ def evaluate_saved_pair_aware_model(
     class_weights = compute_class_weights(
         train_loader, class_weight_mode, device, target_mask_attr, num_classes
     )
-    inactive_pos_weight = compute_gate_pos_weight(
-        train_loader, gate_pos_weight_mode, device, target_mask_attr, num_classes
+    inactive_pos_weight = compute_inactive_gate_pos_weight(
+        train_loader, inactive_gate_pos_weight_mode, device, target_mask_attr, num_classes
     )
     flag_pos_weight = compute_flag_pos_weight(
         train_loader,
@@ -1552,7 +1781,7 @@ def evaluate_saved_pair_aware_model(
         log_std=log_std,
         cuts=cuts,
         epsilon=epsilon,
-        gate_threshold=gate_threshold,
+        inactive_gate_threshold=inactive_gate_threshold,
         flag_gate_threshold=flag_gate_threshold,
         target_mask_attr=target_mask_attr,
         selection_score_weights=selection_score_weights,

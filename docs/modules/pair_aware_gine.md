@@ -52,7 +52,7 @@ All paths apply the flag gate first when $\sigma(\mathrm{flag}) \ge$ `flag_gate_
 | Mode | Non-flag rule |
 |------|---------------|
 | `class` | `argmax` on severity logits |
-| `gated` | Inactive-gate threshold → class 0, else argmax over active severity classes |
+| `gated` | Inactive-gate threshold (`inactive_gate_threshold`) → class 0, else argmax over active severity classes |
 | `log_kpi` | Invert standardized log-KPI and map through configured cuts |
 
 ## Training artifacts
