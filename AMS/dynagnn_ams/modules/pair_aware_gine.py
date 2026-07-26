@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Sustainable Power Systems Laboratory (https://sps-lab.org/)
-# Pair-aware residual GINE model (inference-only copy aligned with DYNAGNN v1.2).
+# Pair-aware residual GINE model (inference-only copy aligned with DYNAGNN hierarchical heads).
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -60,7 +60,13 @@ class ResidualGINEBlock(nn.Module):
 
 
 class PairAwareGINE(nn.Module):
-    """Direct event- and target-conditioned GINE model (DYNAGNN v1.2)."""
+    """Hierarchical event/target-conditioned GINE (severity + flag gate + inactive gate).
+
+    Matches DYNAGNN deployment checkpoints:
+    - severity head for classes ``0 … num_classes-2``
+    - binary flag head for class ``num_classes-1``
+    - inactive head for class-0 gating on the non-flag branch
+    """
 
     def __init__(
         self,
@@ -78,6 +84,8 @@ class PairAwareGINE(nn.Module):
         self.hparams = hparams
         self.target_mask_attr = str(target_mask_attr)
         self.num_classes = int(num_classes)
+        if self.num_classes < 2:
+            raise ValueError(f"num_classes must be >= 2, got {self.num_classes}")
 
         self.node_type_embedding = nn.Embedding(num_node_types, hparams.type_dim)
         self.edge_type_embedding = nn.Embedding(num_edge_types, hparams.type_dim)
@@ -126,7 +134,8 @@ class PairAwareGINE(nn.Module):
             nn.ReLU(),
             nn.Dropout(hparams.dropout),
         )
-        self.class_head = nn.Linear(hparams.decoder_hidden_dim, self.num_classes)
+        self.class_head = nn.Linear(hparams.decoder_hidden_dim, self.num_classes - 1)
+        self.flag_head = nn.Linear(hparams.decoder_hidden_dim, 1)
         self.inactive_head = nn.Linear(hparams.decoder_hidden_dim, 1)
         self.regression_head = nn.Linear(hparams.decoder_hidden_dim, 1)
 
@@ -224,6 +233,7 @@ class PairAwareGINE(nn.Module):
         shared = self.shared_decoder(torch.cat(parts, dim=1))
         return {
             "class_logits": self.class_head(shared),
+            "flag_logit": self.flag_head(shared).squeeze(1),
             "inactive_logit": self.inactive_head(shared).squeeze(1),
             "log_kpi_std": self.regression_head(shared).squeeze(1),
         }

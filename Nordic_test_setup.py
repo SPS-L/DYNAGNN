@@ -62,9 +62,9 @@ training:
     inactive_gate_pos_weight_mode: balanced
     flag_gate_pos_weight_mode: balanced  # none | balanced
     flag_pos_weight_multiplier: 1.0  # scales balanced flag-gate pos_weight
-    inactive_gate_threshold: 0.50  # initial decode threshold (training / early stopping)
+    inactive_gate_threshold: 0.50  # initial decode threshold (used only for end-of-trial calibration start / diagnostics)
     flag_gate_threshold: 0.50  # initial decode threshold for flag class K-1
-    # End-of-trial joint val sweep → trial score + checkpoint thresholds (not re-swept on retrain)
+    # End-of-trial joint val sweep on min-val-loss checkpoint → Optuna objective + checkpoint thresholds (not re-swept on retrain)
     threshold_calibration:
       inactive_gate_low: 0.05
       inactive_gate_high: 0.95

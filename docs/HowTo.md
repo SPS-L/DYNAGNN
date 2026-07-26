@@ -119,19 +119,19 @@ The other `pair_aware` keys do **not** enter $\mathcal{L}$ as scalar multipliers
 | `flag_gate_pos_weight_mode` | Positive-class weight inside $\mathcal{L}_{\mathrm{BCE,flag}}$ (e.g. `balanced`) |
 | `flag_pos_weight_multiplier` | Scales the balanced flag-gate pos-weight |
 | `epsilon` | $\varepsilon$ in $\log_{10}(\mathrm{KPI}+\varepsilon)$ when forming regression targets (and when inverting log-KPI decode) |
-| `inactive_gate_threshold` | Initial decode threshold for class 0 (`gated` path); jointly calibrated on val at end of each Optuna trial |
+| `inactive_gate_threshold` | Initial decode threshold for class 0 (`gated` path); jointly calibrated on the min-val-loss checkpoint at end of each Optuna trial |
 | `flag_gate_threshold` | Initial decode threshold for flag class $K-1$; jointly calibrated with the inactive gate |
 | `threshold_calibration.*` | Grid for the end-of-trial joint sweep (`inactive_gate_{low,high,step}`, `flag_gate_{low,high,step}`) |
 | `selection_output` | Which decode path is scored for checkpoint / Optuna selection: `auto`, `class`, `gated`, or `log_kpi` |
 | `selection_score.*` | Weights of the validation **protection selection score** (see below) |
 
-**Protection selection score** (Optuna trial ranking / early stopping; not backpropagated):
+**Protection selection score** (Optuna trial ranking after calibration; not backpropagated):
 
 $$ \mathrm{score} = w_{\mathrm{ba}}\cdot\mathrm{bal\_acc} + w_{\mathrm{f1}}\cdot\mathrm{macro\_F1} + w_{\mathrm{acc}}\cdot\mathrm{acc} + w_{\mathrm{w1}}\cdot\mathrm{within\_1} + w_{\mathrm{fr}}\cdot\mathrm{flag\_recall} $$
 
 configured under `training.pair_aware.selection_score` (`balanced_accuracy`, `macro_f1`, `accuracy`, `within_one`, `flag_recall`).
 
-**Threshold calibration (per Optuna trial):** epochs use the config initial thresholds for decode / early stopping. After the best epoch is chosen, both gate thresholds are swept jointly on validation predictions; the best `protection_selection_score` is the **trial objective**. Calibrated thresholds (and `selected_output`) are stored on the trial and copied into the deployment `.pt`. Final train+val retrain **reuses** those thresholds and does **not** sweep again.
+**Per Optuna trial:** early stopping, LR schedule, and pruning use **total validation loss** (thresholds do not affect the loss). After training, reload the **minimum-validation-loss** checkpoint, jointly sweep both gate thresholds on validation, and take the best `protection_selection_score` as the **trial objective**. Calibrated thresholds (and `selected_output`) are stored on the trial and copied into the deployment `.pt`. Final train+val retrain **reuses** those thresholds and does **not** sweep again.
 
 **Example (Nordic defaults from `Nordic_test_setup.py`):** $w_{\mathrm{cls}}=1.0$, $w_{\mathrm{reg}}=0.30$, $w_{\mathrm{gate}}=0.20$, $w_{\mathrm{flag}}=0.50$, $w_{\mathrm{ord}}=0.10$, `class_weight_mode: sqrt_inverse`, `epsilon: 1.0e-10`, `selection_output: auto`, selection score weights `0.30 / 0.25 / 0.15 / 0.10 / 0.20`.
 
@@ -501,7 +501,7 @@ inference:
   initialization_duration: 10.0  # steady-state run before graph build; use 0 to skip
 ```
 
-With `model.num_classes = len(cuts) + 2`, the highest class index is the action/disconnection **flag** class (`K−1`). The model learns a separate binary flag gate for that class. Voltage and Spower are tuned independently with Optuna; validation checkpoints maximize the configurable [protection selection score](src/training.md#training-selection-score). After the search, best hparams are **retrained on train+val** for the winning trial’s `best_epoch` epochs; that model is written under `model/<study_name>/` as `voltage_best_model.pt` and `spower_best_model.pt` and evaluated on test.
+With `model.num_classes = len(cuts) + 2`, the highest class index is the action/disconnection **flag** class (`K−1`). The model learns a separate binary flag gate for that class. Voltage and Spower are tuned independently with Optuna; each trial early-stops on validation loss, then jointly calibrates gate thresholds and ranks trials by the configurable [protection selection score](src/training.md#training-selection-score). After the search, best hparams are **retrained on train+val** for the winning trial’s `best_epoch` epochs; that model is written under `model/<study_name>/` as `voltage_best_model.pt` and `spower_best_model.pt` and evaluated on test.
 
 **Example (Nordic):** four cuts → classes 0–4 by KPI magnitude, flag class 5, `num_classes: 6`.
 

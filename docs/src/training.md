@@ -81,7 +81,7 @@ Both call [`pair_aware_training.run_task_training()`](../modules/pair_aware_trai
 
 Also fixed: `class_weight_mode`, `inactive_gate_pos_weight_mode`, `flag_gate_pos_weight_mode`, `flag_pos_weight_multiplier`, initial `inactive_gate_threshold` / `flag_gate_threshold`, optional `threshold_calibration.*` grid, `epsilon`, `selection_output` (`auto` / `class` / `gated` / `log_kpi`), and `selection_score.*`.
 
-At the end of each Optuna trial, inactive and flag gate thresholds are swept jointly on validation; that calibrated score ranks the trial. The winning trial’s thresholds are written into the deployment checkpoint and reused on train+val retrain (no second sweep).
+At the end of each Optuna trial, the **minimum-validation-loss** checkpoint is reloaded, then inactive and flag gate thresholds are swept jointly on validation; that calibrated `protection_selection_score` ranks the trial. During the epoch loop, early stopping / pruning / LR schedule use **validation loss only** (decode thresholds do not affect the loss). The winning trial’s thresholds are written into the deployment checkpoint and reused on train+val retrain (no second sweep).
 
 ### Optuna (`optuna.hparams`)
 
@@ -108,7 +108,7 @@ Ids are matched exactly when possible, then via canonical normalization and safe
 
 ## Training selection score
 
-Per-epoch checkpoints and the winning Optuna trial maximize the **protection selection score**:
+Within each trial, early stopping / pruning use **total validation loss**. After the min-loss checkpoint is reloaded, both gate thresholds are calibrated on validation and the **protection selection score** becomes the Optuna trial objective:
 
 ```text
 score = w_ba·balanced_accuracy + w_f1·macro_f1 + w_acc·accuracy

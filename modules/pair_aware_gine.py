@@ -1318,7 +1318,7 @@ def run_pair_aware_training(
         model.parameters(), lr=hparams.lr, weight_decay=hparams.weight_decay
     )
     scheduler = ReduceLROnPlateau(
-        optimizer, mode="max", factor=0.5, patience=4, min_lr=1.0e-6
+        optimizer, mode="min", factor=0.5, patience=4, min_lr=1.0e-6
     )
     class_weights = compute_class_weights(
         train_loader, class_weight_mode, device, target_mask_attr, num_classes
@@ -1367,6 +1367,7 @@ def run_pair_aware_training(
         )
 
     history: list[dict] = []
+    best_val_loss = float("inf")
     best_score = -float("inf")
     best_epoch = 0
     best_output = selection_output or "class"
@@ -1429,28 +1430,25 @@ def run_pair_aware_training(
                 selection_score_weights=selection_score_weights,
                 num_classes=num_classes,
             )
+            val_loss = float(val_result["loss"]["total"])
+            # Decode scores are diagnostics only (initial thresholds); not used for
+            # early stopping / pruning / LR schedule.
             candidates = {
                 "class": val_result["full_class_class"]["protection_selection_score"],
                 "gated": val_result["full_class_gated"]["protection_selection_score"],
                 "log_kpi": val_result["full_class_log_kpi"]["protection_selection_score"],
             }
-            selected = selection_output or max(candidates, key=candidates.get)
-            if selected not in candidates:
-                raise ValueError(f"Unsupported selection_output: {selected!r}")
-            score = float(candidates[selected])
             for key, value in val_result["loss"].items():
                 row[f"val_{key}_loss"] = float(value)
             for name, value in candidates.items():
                 row[f"val_{name}_score"] = float(value)
-            row["val_selected_output"] = selected
-            row["val_selected_score"] = score
-            scheduler.step(score)
+            row["val_flag_recall"] = float(val_result["full_class_class"]["flag_recall"])
+            scheduler.step(val_loss)
 
             improved = False
-            if fixed_epochs is None and score > best_score + 1.0e-6:
-                best_score = score
+            if fixed_epochs is None and val_loss < best_val_loss - 1.0e-6:
+                best_val_loss = val_loss
                 best_epoch = epoch
-                best_output = selected
                 best_state = {
                     key: value.detach().cpu().clone()
                     for key, value in model.state_dict().items()
@@ -1461,43 +1459,41 @@ def run_pair_aware_training(
                 stale += 1
 
             marker = "*" if improved else " "
-            selected_metrics = val_result[f"full_class_{selected}"]
             logger.info(
-                "Epoch %03d %s | train_loss=%.4f | val_loss=%.4f | val class=%.4f inactive_gate=%.4f logKPI=%.4f flag_gate=%.4f | selected=%s %.4f",
+                "Epoch %03d %s | train_loss=%.4f | val_loss=%.4f | val class=%.4f inactive_gate=%.4f logKPI=%.4f flag_gate=%.4f",
                 epoch,
                 marker,
                 train_result["loss"]["total"],
-                float(val_result["loss"]["total"]),
+                val_loss,
                 float(candidates["class"]),
                 float(candidates["gated"]),
                 float(candidates["log_kpi"]),
-                float(selected_metrics["flag_recall"]),
-                selected,
-                score,
+                float(val_result["full_class_class"]["flag_recall"]),
             )
             history.append(row)
 
             if trial is not None:
-                trial.report(score, step=epoch)
+                # Study maximizes the final calibrated score; report -val_loss so
+                # MedianPruner treats lower validation loss as better mid-trial.
+                trial.report(-val_loss, step=epoch)
                 if trial.should_prune():
                     import optuna
                     pruned = True
                     logger.info(
-                        "Trial %d pruned at epoch %d (val_score=%.4f)",
+                        "Trial %d pruned at epoch %d (val_loss=%.4f)",
                         trial_label,
                         epoch,
-                        score,
+                        val_loss,
                     )
                     raise optuna.TrialPruned()
 
             if fixed_epochs is None and stale >= int(patience):
                 stopped_early = True
                 logger.info(
-                    "Early stopping at epoch %d (best_epoch=%d, best_val=%.4f [%s])",
+                    "Early stopping at epoch %d (best_epoch=%d, best_val_loss=%.4f)",
                     epoch,
                     best_epoch,
-                    best_score,
-                    best_output,
+                    best_val_loss,
                 )
                 break
         else:
@@ -1520,6 +1516,7 @@ def run_pair_aware_training(
 
     calibrated = False
     if do_calibrate and validation_loader is not None and not pruned:
+        # Reload is already the min-validation-loss checkpoint above.
         pre_calib_result = _run_epoch(
             model=model,
             loader=validation_loader,
@@ -1558,7 +1555,9 @@ def run_pair_aware_training(
         best_score = float(calibration["best_validation_score"])
         calibrated = True
         logger.info(
-            "Joint threshold calibration | inactive=%.3f→%.3f | flag=%.3f→%.3f | decode=%s | val=%.4f",
+            "Joint threshold calibration (min-val-loss epoch %d) | "
+            "inactive=%.3f→%.3f | flag=%.3f→%.3f | decode=%s | calibrated_score=%.4f",
+            best_epoch,
             initial_inactive_gate_threshold,
             inactive_gate_threshold,
             initial_flag_gate_threshold,
@@ -1569,10 +1568,12 @@ def run_pair_aware_training(
 
     if trial_label is not None and not pruned:
         logger.info(
-            "Trial %d finished | trained_epochs=%d | best_epoch=%d | best_val=%.4f [%s]%s%s",
+            "Trial %d finished | trained_epochs=%d | best_epoch=%d | "
+            "best_val_loss=%.4f | calibrated_score=%.4f [%s]%s%s",
             trial_label,
             len(history),
             best_epoch,
+            best_val_loss if best_val_loss != float("inf") else float("nan"),
             best_score if best_score != -float("inf") else float("nan"),
             best_output,
             " | early_stop" if stopped_early else "",
@@ -1589,6 +1590,12 @@ def run_pair_aware_training(
                 "hparams": asdict(hparams),
                 "loss_weights": asdict(loss_weights),
                 "best_epoch": best_epoch,
+                "best_validation_loss": None
+                if best_val_loss == float("inf")
+                else float(best_val_loss),
+                "best_validation_score": None
+                if best_score == -float("inf")
+                else float(best_score),
                 "selected_output": best_output,
                 "log_mean": log_mean,
                 "log_std": log_std,
@@ -1614,6 +1621,9 @@ def run_pair_aware_training(
         "best_epoch": int(best_epoch),
         "trained_epochs": int(len(history)),
         "selected_output": best_output,
+        "best_validation_loss": None
+        if best_val_loss == float("inf")
+        else float(best_val_loss),
         "best_validation_score": None if best_score == -float("inf") else float(best_score),
         "model_state_path": str(artifact_dir / "model_state.pt"),
         "inactive_gate_threshold": float(inactive_gate_threshold),

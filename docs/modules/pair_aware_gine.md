@@ -38,10 +38,10 @@ Forward output keys: `class_logits` (severity, size `K−1`), `flag_logit`, `ina
 
 | Function | Description |
 |----------|-------------|
-| `run_pair_aware_training(...)` | Epoch loop, early stopping, checkpoint selection |
+| `run_pair_aware_training(...)` | Epoch loop, val-loss early stopping, end-of-trial threshold calibration |
 | `evaluate_saved_pair_aware_model(...)` | Reload best weights and evaluate on a loader |
 | `classification_metrics(...)` | Confusion-matrix metrics and ordinal offsets |
-| `protection_selection_score(...)` | Validation composite used by Optuna / early stopping |
+| `protection_selection_score(...)` | Validation composite used as the Optuna trial objective after threshold calibration |
 | `selection_score(...)` | Legacy reporting score (not used for Optuna) |
 | `compute_flag_pos_weight(...)` | Balanced pos-weight for the flag-gate BCE |
 

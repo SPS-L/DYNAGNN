@@ -627,7 +627,7 @@ def run_task_training(
     )
     logger.info(
         "Initial decode thresholds | inactive=%.3f | flag=%.3f "
-        "(joint val calibration at end of each Optuna trial)",
+        "(early stop / prune on val_loss; joint val calibration at end of each Optuna trial)",
         initial_inactive_gate_threshold,
         initial_flag_gate_threshold,
     )
@@ -689,6 +689,10 @@ def run_task_training(
         trial.set_user_attr(
             "thresholds_calibrated", bool(result.get("thresholds_calibrated", False))
         )
+        if result.get("best_validation_loss") is not None:
+            trial.set_user_attr(
+                "best_validation_loss", float(result["best_validation_loss"])
+            )
         return float(score)
 
     study = optuna.create_study(
@@ -736,7 +740,9 @@ def run_task_training(
         best_trial.number,
     )
     logger.info(
-        "best_val=%.4f | best_epoch=%d | decode=%s | inactive_thr=%.3f | flag_thr=%.3f | hparams=%s",
+        "best_val_loss=%.4f | calibrated_score=%.4f | best_epoch=%d | decode=%s | "
+        "inactive_thr=%.3f | flag_thr=%.3f | hparams=%s",
+        float(best_trial.user_attrs.get("best_validation_loss", float("nan"))),
         float(best_trial.value),
         best_epoch,
         selected_output,
