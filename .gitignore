@@ -97,6 +97,7 @@ dynamo.log
 **/Dataset/
 **/model/
 **/training/
+**/kpi_cut_optimization/
 
 # Optional local data root when data.path points inside the repository
 /data/

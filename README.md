@@ -31,13 +31,15 @@ The work also belongs to the wider **AMS (Adaptive Model Selection)** research p
 | **`main.py`** | Full **training** pipeline (simulations → KPIs → datasets → Optuna → checkpoints) |
 | **`DYNAGNN.py`** | **General inference** — per-component activity classes on new OPs / events (CSV outputs) |
 | **`dynagnn-ams` / `AMS/`** | **Model reduction** (optional) — scenario `.dsl` → IIDM switch simplification; **Nordic checkpoints** in `AMS/dynagnn_ams/models/Nordic/` |
+| **`tools/`** | **Optional utilities** outside the pipeline (e.g. physically aware KPI cut recommendation) |
 
-See [`AMS/README.md`](AMS/README.md) for the AMS workflow.
+See [`AMS/README.md`](AMS/README.md) for the AMS workflow and [`tools/README.md`](tools/README.md) for offline tools.
 
 ## Docs
 
 - **Setup & config**: [`docs/HowTo.md`](docs/HowTo.md)
 - **Training / inference / AMS**: [`docs/src/training.md`](docs/src/training.md), [`docs/src/inference.md`](docs/src/inference.md), [`AMS/README.md`](AMS/README.md)
+- **Optional tools**: [`tools/README.md`](tools/README.md)
 
 <a id="environment-setup"></a>
 

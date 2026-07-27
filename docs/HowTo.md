@@ -164,7 +164,22 @@ python3 main.py --to-step split
 | `KPI/KPI_spower.csv` | Combined raw spower KPI values (flagged cells masked with `NaN`) — from `curve_process` |
 | `Dataset/train_val_test_split.csv` | Train / validation / test assignment per scenario (`split`, `operating_point`, `contingency`) — from `split` |
 
-3. Join the KPI tables with `train_val_test_split.csv` and **keep only rows where `split` is `train`**. Inspect the training KPI distribution (histograms, percentiles, class counts after tentative cuts).
+3. Choose cut thresholds on **training** rows only. You can:
+
+   - **select cuts manually** (histograms, percentiles, domain judgment), or
+   - **use your own method**, or
+   - **optionally** run the bundled tool in [`tools/`](../tools/README.md) (physically aware multi-objective cut recommendation):
+
+```bash
+# Default: Nordic example data.path
+python3 tools/physically_aware_kpi_cut_optimization.py
+
+# Your network (same layout as config data.path)
+python3 tools/physically_aware_kpi_cut_optimization.py --data-path /path/to/your/data
+```
+
+   See [`tools/README.md`](../tools/README.md) for flags and outputs. The tool is **outside** the `main.py` pipeline and is not required.
+
 4. Set `kpi.class_bins.voltage.cuts` and `kpi.class_bins.spower.cuts` in `config.yaml`, then run the remaining stages:
 
 ```bash
