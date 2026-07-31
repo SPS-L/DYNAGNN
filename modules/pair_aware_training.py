@@ -22,7 +22,10 @@ from modules.pair_aware_gine import (
     compute_class_weights,
     compute_inactive_gate_pos_weight,
     evaluate_saved_pair_aware_model,
+    is_trial_incomplete,
+    mark_trial_done,
     run_pair_aware_training,
+    save_trial_params,
 )
 
 
@@ -676,50 +679,10 @@ def run_task_training(
         else [round(float(v), 4) for v in inactive_pos_weight.detach().cpu().tolist()],
     )
     logger.info("Artifacts: %s", task_dir)
+    logger.info("Mid-trial resume enabled (optuna_trials/trial_*/resume.pt)")
 
     # Keep Optuna's own INFO chatter out of dynagnn.log / stdout tee.
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-
-    def objective(trial: optuna.Trial) -> float:
-        hparams = _sample_hparams(trial, hparam_space)
-        trial_root = trials_root / f"trial_{trial.number}"
-        try:
-            result = run_pair_aware_training(
-                task=task,
-                target_mask_attr=target_mask_attr,
-                train_loader=train_loader,
-                validation_loader=val_loader,
-                test_loader=None,
-                output_dir=trial_root,
-                num_node_tokens=int(attachment["node_vocab_size"]),
-                num_contingency_tokens=int(attachment["contingency_vocab_size"]),
-                hparams=hparams,
-                loss_weights=loss_weights,
-                log_mean=log_mean,
-                log_std=log_std,
-                cuts=cuts_array,
-                epsilon=epsilon,
-                inactive_gate_threshold=inactive_gate_threshold,
-                epochs=epochs,
-                patience=patience,
-                fixed_epochs=None,
-                selection_output=selection_output_arg,
-                class_weight_mode=class_weight_mode,
-                inactive_gate_pos_weight_mode=inactive_gate_pos_weight_mode,
-                selection_score_weights=selection_score_weights,
-                num_classes=num_classes,
-                logger=logger,
-                trial=trial,
-            )
-        except optuna.TrialPruned:
-            raise
-        score = result.get("best_validation_score")
-        if score is None:
-            raise RuntimeError(f"Optuna trial {trial.number} produced no validation score")
-        trial.set_user_attr("model_state_path", result["model_state_path"])
-        trial.set_user_attr("selected_output", result["selected_output"])
-        trial.set_user_attr("best_epoch", int(result["best_epoch"]))
-        return float(score)
 
     study = optuna.create_study(
         direction="maximize",
@@ -729,7 +692,185 @@ def run_task_training(
         storage=storage,
         load_if_exists=True,
     )
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+
+    def _count_complete(study_obj: optuna.Study) -> int:
+        return sum(
+            1
+            for t in study_obj.get_trials(deepcopy=False)
+            if t.state == optuna.trial.TrialState.COMPLETE
+        )
+
+    def _fail_stale_running(study_obj: optuna.Study) -> None:
+        for trial in study_obj.get_trials(deepcopy=False):
+            if trial.state != optuna.trial.TrialState.RUNNING:
+                continue
+            try:
+                study_obj.tell(trial, state=optuna.trial.TrialState.FAIL)
+                logger.warning(
+                    "Marked stale RUNNING Optuna trial %d as FAIL (will resume from disk if present)",
+                    trial.number,
+                )
+            except Exception as exc:
+                logger.warning("Could not fail stale trial %d: %s", trial.number, exc)
+
+    def _optuna_trial_for_resume(
+        study_obj: optuna.Study,
+        *,
+        folder_trial_number: int,
+        params: dict[str, Any],
+    ):
+        trials = study_obj.get_trials(deepcopy=False)
+        if 0 <= folder_trial_number < len(trials):
+            existing = trials[folder_trial_number]
+            if existing.state == optuna.trial.TrialState.RUNNING:
+                return existing
+            if existing.state == optuna.trial.TrialState.COMPLETE:
+                logger.info(
+                    "Disk trial_%d already COMPLETE in Optuna; marking done",
+                    folder_trial_number,
+                )
+                return None
+        study_obj.enqueue_trial(dict(params))
+        trial = study_obj.ask()
+        logger.info(
+            "Resuming disk trial_%d under Optuna trial %d (same params)",
+            folder_trial_number,
+            trial.number,
+        )
+        return trial
+
+    class _NoPruneTrial:
+        def __init__(self, number: int, params: dict[str, Any]):
+            self.number = int(number)
+            self.params = dict(params)
+
+        def report(self, value: float, step: int) -> None:
+            return None
+
+        def should_prune(self) -> bool:
+            return False
+
+        def set_user_attr(self, key: str, value: Any) -> None:
+            return None
+
+    def _train_one(*, trial_obj, trial_root: Path, hparams) -> dict:
+        return run_pair_aware_training(
+            task=task,
+            target_mask_attr=target_mask_attr,
+            train_loader=train_loader,
+            validation_loader=val_loader,
+            test_loader=None,
+            output_dir=trial_root,
+            num_node_tokens=int(attachment["node_vocab_size"]),
+            num_contingency_tokens=int(attachment["contingency_vocab_size"]),
+            hparams=hparams,
+            loss_weights=loss_weights,
+            log_mean=log_mean,
+            log_std=log_std,
+            cuts=cuts_array,
+            epsilon=epsilon,
+            inactive_gate_threshold=inactive_gate_threshold,
+            epochs=epochs,
+            patience=patience,
+            fixed_epochs=None,
+            selection_output=selection_output_arg,
+            class_weight_mode=class_weight_mode,
+            inactive_gate_pos_weight_mode=inactive_gate_pos_weight_mode,
+            selection_score_weights=selection_score_weights,
+            num_classes=num_classes,
+            logger=logger,
+            trial=trial_obj,
+        )
+
+    def _set_trial_attrs(trial_obj, result: dict, trial_root: Path) -> None:
+        attrs = {
+            "model_state_path": result["model_state_path"],
+            "selected_output": result["selected_output"],
+            "best_epoch": int(result["best_epoch"]),
+            "artifact_dir": str(trial_root),
+        }
+        if isinstance(trial_obj, optuna.trial.Trial):
+            for key, value in attrs.items():
+                trial_obj.set_user_attr(key, value)
+            return
+        trial_id = getattr(trial_obj, "_trial_id", None)
+        if trial_id is None:
+            return
+        for key, value in attrs.items():
+            try:
+                study._storage.set_trial_user_attr(trial_id, key, value)
+            except Exception:
+                pass
+
+    def _finish_success(trial_obj, trial_root: Path, result: dict) -> None:
+        score = result.get("best_validation_score")
+        if score is None:
+            raise RuntimeError(f"Optuna trial produced no validation score under {trial_root}")
+        _set_trial_attrs(trial_obj, result, trial_root)
+        study.tell(trial_obj, float(score))
+        mark_trial_done(
+            trial_root,
+            status="complete",
+            score=float(score),
+            extra={
+                "best_epoch": int(result["best_epoch"]),
+                "optuna_trial": int(getattr(trial_obj, "number", -1)),
+            },
+        )
+
+    _fail_stale_running(study)
+
+    while _count_complete(study) < n_trials:
+        incomplete_dirs = sorted(
+            p
+            for p in trials_root.glob("trial_*")
+            if p.is_dir() and is_trial_incomplete(p)
+        )
+        if incomplete_dirs:
+            trial_root = incomplete_dirs[0]
+            params_path = trial_root / "params.json"
+            if not params_path.exists():
+                logger.warning("Incomplete %s missing params.json; skipping", trial_root.name)
+                mark_trial_done(trial_root, status="abandoned_missing_params")
+                continue
+            params_payload = json.loads(params_path.read_text(encoding="utf-8"))
+            folder_number = int(params_payload.get("trial_number", -1))
+            params = dict(params_payload["params"])
+            trial_obj = _optuna_trial_for_resume(
+                study, folder_trial_number=folder_number, params=params
+            )
+            if trial_obj is None:
+                mark_trial_done(trial_root, status="complete_already")
+                continue
+            if isinstance(trial_obj, optuna.trial.Trial):
+                report_trial = trial_obj
+            else:
+                report_trial = _NoPruneTrial(
+                    int(getattr(trial_obj, "number", folder_number)), params
+                )
+            hparams = _hparams_from_best_params(params)
+            logger.info("Resuming %s from mid-trial checkpoint", trial_root.name)
+            try:
+                result = _train_one(
+                    trial_obj=report_trial, trial_root=trial_root, hparams=hparams
+                )
+                _finish_success(trial_obj, trial_root, result)
+            except optuna.TrialPruned:
+                study.tell(trial_obj, state=optuna.trial.TrialState.PRUNED)
+                mark_trial_done(trial_root, status="pruned")
+            continue
+
+        trial = study.ask()
+        trial_root = trials_root / f"trial_{trial.number}"
+        hparams = _sample_hparams(trial, hparam_space)
+        save_trial_params(trial_root, trial_number=int(trial.number), params=dict(trial.params))
+        try:
+            result = _train_one(trial_obj=trial, trial_root=trial_root, hparams=hparams)
+            _finish_success(trial, trial_root, result)
+        except optuna.TrialPruned:
+            study.tell(trial, state=optuna.trial.TrialState.PRUNED)
+            mark_trial_done(trial_root, status="pruned")
+
     if study.best_trial.value is None:
         raise RuntimeError(f"No completed Optuna trial for {task}")
 
@@ -746,6 +887,12 @@ def run_task_training(
     # Train/val curves stay tied to the winning Optuna trial (not the retrain).
     optuna_state_path = Path(str(best_trial.user_attrs.get("model_state_path", "")))
     best_history_csv = optuna_state_path.parent / "history.csv"
+    if not best_history_csv.exists():
+        artifact = best_trial.user_attrs.get("artifact_dir")
+        if artifact:
+            best_history_csv = Path(str(artifact)) / "history.csv"
+        else:
+            best_history_csv = trials_root / f"trial_{best_trial.number}" / "history.csv"
     if not best_history_csv.exists():
         raise FileNotFoundError(
             f"Best {task} Optuna trial history was not found: {best_history_csv}"

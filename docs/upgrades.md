@@ -176,7 +176,7 @@ v1.2 keeps the **v1.11 KPI labeling** (fixed raw cuts → KPI severity classes p
 | Conditioning | Graph features + `fault_on` / `dz_fault` | Same electrical features **plus** target-id / contingency-id embeddings and explicit **target–contingency** pair interactions |
 | Architecture choice | Single GAT-CORAL path | Pair-aware GINE only (no GAT-CORAL fallback) |
 | Optuna studies | Shared-style GAT hparams (heads, CORAL threshold, under-penalty, …) | **Independent** Voltage and Spower studies; capacity + optimizer only |
-| Selection score | `high_recall + w_f1·high_f1 − w_loss·loss` | `0.40·balanced_acc + 0.30·macro_f1 + 0.20·acc + 0.10·within_one` |
+| Selection score | `high_recall + w_f1·high_f1 − w_loss·loss` | `w_ba·balanced_acc + w_f1·macro_f1 + w_acc·acc + w_w1·within_one` |
 | Checkpoints | `gat_voltage_best_model.pt`, `gat_spower_best_model.pt` | `voltage_best_model.pt`, `spower_best_model.pt` |
 | External inference I/O | One class per component | **Unchanged** (`prediction_voltage.csv` / `prediction_spower.csv`) |
 
@@ -219,8 +219,10 @@ The bundled Nordic example ships **35** operating points (`operating_point_1` �
 | `data/model/<study_name>/voltage_best_hparams.json`, `spower_best_hparams.json` | Checkpoint metadata without weights |
 | `data/model/<study_name>/x_scaler.pkl`, `edge_attr_scaler.pkl` | Train-fit feature scalers |
 | `data/training/<study_name>/<task>/optuna_*.sqlite3`, `optuna_trials.csv` | Per-task Optuna studies (`optuna.study_name`) |
-| `data/training/<study_name>/<task>/optuna_trials/trial_N/` | Per-trial history and weights |
+| `data/training/<study_name>/<task>/optuna_trials/trial_N/` | Per-trial history/weights plus mid-trial `resume.pt` / `params.json` (crash → continue from next epoch; **per task**) |
 | `data/training/<study_name>/<task>/plots/` | Diagnostics from `modules/training_plots.py`: multi-subplot `loss_curve.png` + `score_curve.png` from the best Optuna trial; confusion / distance / node examples from the final train+val test eval |
+
+**Mid-trial Optuna resume:** training is single-process. After each epoch, `resume.pt` is written under the active `trial_N/` (and under `final_retrain/` during the train+val retrain). On restart, incomplete trials are finished before new ones are asked; the study stops at `optuna.n_trials` COMPLETE trials. Voltage and Spower resume independently. See [`pair_aware_training.md`](modules/pair_aware_training.md#mid-trial-resume).
 
 **Removed from the active stack:** GAT-CORAL training/decoding modules, `gat_*_best_model.pt` naming, CORAL Optuna knobs (`under_penalty_lambda`, `coral_prediction_threshold`, …), and high-class selection weights (`high_class_threshold`, `selection_f1_weight`, `selection_loss_weight`).
 

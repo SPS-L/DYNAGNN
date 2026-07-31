@@ -35,8 +35,9 @@ Forward output keys: `class_logits`, `inactive_logit`, `log_kpi_std`.
 
 | Function | Description |
 |----------|-------------|
-| `run_pair_aware_training(...)` | Epoch loop, early stopping, checkpoint selection |
+| `run_pair_aware_training(...)` | Epoch loop, early stopping, checkpoint selection; loads/saves mid-trial `resume.pt` |
 | `evaluate_saved_pair_aware_model(...)` | Reload best weights and evaluate on a loader |
+| `save_trial_params(...)` / `mark_trial_done(...)` / `is_trial_incomplete(...)` | Optuna trial-folder helpers used by [`pair_aware_training`](pair_aware_training.md) |
 | `classification_metrics(...)` | Confusion-matrix metrics and ordinal offsets |
 | `selection_score(...)` | Validation composite used by Optuna / early stopping |
 
@@ -45,6 +46,8 @@ Selection score (weights from `training.pair_aware.selection_score`, defaults `0
 ```text
 score = w_ba·balanced_accuracy + w_f1·macro_f1 + w_acc·accuracy + w_w1·within_one_accuracy
 ```
+
+After every epoch (and during final train+val retrain), `run_pair_aware_training` atomically writes `resume.pt` under the trial / retrain output directory so a crash can continue from the next epoch. See [mid-trial resume in `pair_aware_training`](pair_aware_training.md#mid-trial-resume).
 
 ## Decode paths
 
@@ -65,6 +68,8 @@ After evaluating the final best model on the test set, diagnostic figures are wr
 | `confusion_matrix.png` | Row-normalised confusion matrix on the test set (final train+val model) |
 | `distance_histogram.png` | Histogram of signed prediction offsets (pred − true) |
 | `node_example_cls<N>_<UNDER\|OVER>_ex<k>_of_5.png` | Up to 5 under- and 5 over-prediction examples |
+
+Per Optuna trial, mid-run state also lives under `optuna_trials/trial_N/` (`resume.pt`, `params.json`, …) — documented in [`pair_aware_training`](pair_aware_training.md#per-trial-folder-optuna_trialstrial_n).
 
 ## Notes
 

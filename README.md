@@ -141,7 +141,7 @@ See [`docs/HowTo.md`](docs/HowTo.md) for the detailed setup:
 python3 main.py
 ```
 
-Omit both flags for a **full run**. Use **`--from-step`** to resume from a later stage; use **`--to-step`** to stop after a stage (e.g. `--to-step curve_process` for KPI cut analysis).
+Omit both flags for a **full run**. Use **`--from-step`** to resume from a later stage; use **`--to-step`** to stop after a stage (e.g. `--to-step curve_process` for KPI cut analysis). Inside **training**, Optuna also resumes mid-trial per task from `resume.pt` (see [`docs/modules/pair_aware_training.md`](docs/modules/pair_aware_training.md#mid-trial-resume)).
 
 ```bash
 python3 main.py --to-step curve_process   # through combined KPI tables
@@ -244,7 +244,7 @@ source .venv/bin/activate   # if using venv
 python3 main.py
 ```
 
-`main.py` runs, in order: initialization and Dynawo contingency simulations → graph assets → curve/KPI post-processing (combined KPI tables) → train/val/test split → dataset build → pair-aware GINE Optuna training. Use `--from-step` / `--to-step` to control the run range when rerunning (see [Step 1](#step-1--run-training-mainpy)).
+`main.py` runs, in order: initialization and Dynawo contingency simulations → graph assets → curve/KPI post-processing (combined KPI tables) → train/val/test split → dataset build → pair-aware GINE Optuna training. Use `--from-step` / `--to-step` to control the run range when rerunning (see [Step 1](#step-1--run-training-mainpy)). Within the training stage, Optuna mid-trial progress is checkpointed per task under `data/training/<study_name>/<task>/optuna_trials/trial_N/resume.pt` so a crash can continue from the next epoch (Voltage and Spower independently).
 
 This example has **many** contingencies × 9 operating points; the first full run can take a long time. Progress and errors are written to:
 

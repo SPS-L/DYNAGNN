@@ -87,7 +87,7 @@ Example (for **bus**, use **Type** `bus` in both cases; **Fault name** is a `bus
 | | `validation` | float | Validation fraction or OP count |
 | | `testing` | float | Test fraction or OP count |
 | | `pair_aware.*` | see below | Fixed loss / decoding settings (not Optuna-tuned) |
-| **optuna** | `n_trials` | integer | Hyperparameter trials per task (Voltage and Spower are independent) |
+| **optuna** | `n_trials` | integer | Target **COMPLETE** trials per task (Voltage and Spower are independent; restarts finish incomplete trials then stop at this count) |
 | | `study_name` | string (**required**) | Folder name for `data/training/<study_name>/` and `data/model/<study_name>/` |
 | | `hparams.*` | see `config.yaml` | Search spaces for model capacity + optimizer |
 | **inference** | `initialization_duration` | float (s), or `0` / omit | Steady-state run for `DYNAGNN.py` |
@@ -219,7 +219,7 @@ Higher cuts (τ₂, τ₃, …) have no universal default: choose them from **tr
 5. **`dataset`** — class labels from configured KPI cuts (`src/dataset_construction.py`)
 6. **`training`** — pair-aware GINE Optuna training and model export (`src/training.py`)
 
-Omit both flags for a **full run**. Use **`--from-step`** to resume from a later stage; use **`--to-step`** to stop after a stage (inclusive).
+Omit both flags for a **full run**. Use **`--from-step`** to resume from a later stage; use **`--to-step`** to stop after a stage (inclusive). Within the **training** stage, Optuna also resumes **mid-trial** per task from `optuna_trials/trial_N/resume.pt` (see [`pair_aware_training.md`](modules/pair_aware_training.md#mid-trial-resume)).
 
 ```bash
 # Full run (default)
@@ -512,6 +512,8 @@ inference:
 ```
 
 With `model.num_classes = len(cuts) + 2`, the highest class index is the action/disconnection **flag** class. Voltage and Spower are tuned independently with Optuna; validation checkpoints maximize a balanced multi-class selection score (see [`src/training.md`](src/training.md)). After the search, best hparams are **retrained on train+val** for the winning trial’s `best_epoch` epochs; that model is written under `model/<study_name>/` as `voltage_best_model.pt` and `spower_best_model.pt` and evaluated on test.
+
+If training is interrupted mid-trial, re-run the training stage: each task resumes from `data/training/<study_name>/<task>/optuna_trials/trial_N/resume.pt` (per-task; Voltage and Spower do not share resume state). See [`pair_aware_training.md`](modules/pair_aware_training.md#mid-trial-resume).
 
 **Example (Nordic):** four cuts → classes 0–4 by KPI magnitude, flag class 5, `num_classes: 6`.
 

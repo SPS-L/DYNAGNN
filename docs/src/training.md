@@ -25,7 +25,7 @@ End-to-end **pair-aware GINE training**: build a shared PyG dataset (voltage + s
 | `data/model/<study_name>/voltage_best_model.pt`, `spower_best_model.pt` | Deployment checkpoints |
 | `data/model/<study_name>/voltage_best_hparams.json`, `spower_best_hparams.json` | Checkpoint metadata (hparams, vocabs, cuts, …) |
 | `data/model/<study_name>/training_summary.json` | Best-trial summary for both tasks |
-| `data/training/<study_name>/voltage/`, `…/<study_name>/spower/` | Optuna SQLite/CSV, trial folders, test outputs, and `plots/` (`optuna.study_name`). `loss_curve.png` is one multi-subplot figure (total + classification / regression / gate / ordinal; train blue / val orange) from the best trial’s `history.csv` via [`training_plots`](../modules/training_plots.md) |
+| `data/training/<study_name>/voltage/`, `…/<study_name>/spower/` | Per-task Optuna SQLite/CSV, `optuna_trials/trial_N/` (incl. mid-trial `resume.pt`), test outputs, and `plots/` (`optuna.study_name`). `loss_curve.png` is one multi-subplot figure (total + classification / regression / gate / ordinal; train blue / val orange) from the best trial’s `history.csv` via [`training_plots`](../modules/training_plots.md) |
 
 ## Main entry point
 
@@ -40,7 +40,7 @@ End-to-end **pair-aware GINE training**: build a shared PyG dataset (voltage + s
 3. Append log electrical distance from fault to each node (`dz_fault`).
 4. Attach pair-aware tensors via `attach_pair_aware_targets()`: shared node/contingency vocabularies, event masks, log-KPI targets.
 5. Fit feature scalers on the **train** split only; scale all splits.
-6. `run_voltage_training()` then `run_spower_training()` — each runs its own Optuna study maximizing the validation [selection score](#training-selection-score), then **retrains** the winning hparams on train+val for `best_epoch` epochs and evaluates that model on the held-out test set.
+6. `run_voltage_training()` then `run_spower_training()` — each runs its own Optuna study maximizing the validation [selection score](#training-selection-score), then **retrains** the winning hparams on train+val for `best_epoch` epochs and evaluates that model on the held-out test set. Studies are independent: a crash mid-Spower does not undo a finished Voltage study (see [Mid-trial Optuna resume](#mid-trial-optuna-resume)).
 
 Set `model.num_classes` to **`len(cuts) + 2`** (must be >= 2): `len(cuts)` KPI activity classes plus one flag class (disconnected/controlled). The pipeline validates `len(kpi.class_bins.<task>.cuts) == num_classes - 2`.
 
@@ -84,6 +84,20 @@ Tunable capacity and optimizer settings only:
 `hidden_dim`, `node_id_dim`, `contingency_id_dim`, `type_dim`, `pair_dim`, `num_gnn_layers`, `decoder_hidden_dim`, `dropout`, `lr`, `weight_decay`.
 
 Voltage and Spower each get an independent Optuna study named `<study_name>__pair_aware_<task>` (e.g. `nordic_v1__pair_aware_voltage`). Artifacts are stored under `data/training/<study_name>/<task>/` and `data/model/<study_name>/`.
+
+Each task runs until its study has **`optuna.n_trials` COMPLETE** trials. Re-entering the training stage does **not** blindly add another `n_trials` on top of an already-finished study; incomplete on-disk trials are finished first (mid-epoch resume).
+
+## Mid-trial Optuna resume
+
+Training is single-process (no parallel Optuna workers). After every epoch, each active trial writes `data/training/<study_name>/<task>/optuna_trials/trial_N/resume.pt` (model, optimizer, scheduler, history, best validation state). On restart of the same task:
+
+1. Incomplete `trial_*` folders (with `resume.pt` / `params.json` / unfinished `result.json`) are continued from the next epoch.
+2. Then new trials are asked until `COMPLETE >= n_trials`.
+3. Voltage and Spower keep separate SQLite DBs and trial trees, so resume is **per task**.
+
+Example: Voltage already complete; Spower killed at trial 3 / epoch 23 → Spower resumes trial 3 from epoch 24; Voltage is left alone.
+
+The final train+val retrain under `…/<task>/final_retrain/` uses the same `resume.pt` mechanism if interrupted. Details: [`pair_aware_training.md`](../modules/pair_aware_training.md#mid-trial-resume).
 
 ## Event lookup and `fault_on` placement
 

@@ -14,6 +14,8 @@ Thin entry point for **Spower** (generator) pair-aware GINE Optuna training.
 
 Targets generator nodes via `gen_node_mask`. Deployment checkpoint: `data/model/<study_name>/spower_best_model.pt`.
 
+Optuna artifacts and mid-trial resume live under `data/training/<study_name>/spower/` (independent of Voltage). See [`pair_aware_training.md`](pair_aware_training.md#mid-trial-resume).
+
 ## Related modules
 
 - [`pair_aware_training`](pair_aware_training.md), [`pair_aware_gine`](pair_aware_gine.md), [`training_plots`](training_plots.md), [`voltage_training`](voltage_training.md)

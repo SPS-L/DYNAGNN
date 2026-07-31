@@ -14,6 +14,8 @@ Thin entry point for **Voltage** (bus) pair-aware GINE Optuna training.
 
 Targets bus nodes via `bus_node_mask`. Deployment checkpoint: `data/model/<study_name>/voltage_best_model.pt`.
 
+Optuna artifacts and mid-trial resume live under `data/training/<study_name>/voltage/` (independent of Spower). See [`pair_aware_training.md`](pair_aware_training.md#mid-trial-resume).
+
 ## Related modules
 
 - [`pair_aware_training`](pair_aware_training.md), [`pair_aware_gine`](pair_aware_gine.md), [`training_plots`](training_plots.md), [`spower_training`](spower_training.md)

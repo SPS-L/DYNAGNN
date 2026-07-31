@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from modules.training_plots import save_training_plots
 
@@ -31,6 +32,114 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch_geometric.nn import GINEConv
+
+# Mid-trial resume artifacts under optuna_trials/trial_N/ (crash → continue from epoch).
+RESUME_FILENAME = "resume.pt"
+DONE_FILENAME = "trial_done.json"
+RESULT_FILENAME = "result.json"
+PARAMS_FILENAME = "params.json"
+RESUME_VERSION = 1
+
+
+def _atomic_torch_save(obj: Any, path: Path) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        torch.save(obj, tmp)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+
+
+def save_trial_params(artifact_dir: Path, *, trial_number: int, params: dict) -> None:
+    """Persist sampled Optuna params so a restart can resume the same trial."""
+    payload = {"trial_number": int(trial_number), "params": dict(params)}
+    _atomic_write_text(
+        Path(artifact_dir) / PARAMS_FILENAME,
+        json.dumps(payload, indent=2, sort_keys=True),
+    )
+
+
+def mark_trial_done(
+    artifact_dir: Path,
+    *,
+    status: str,
+    score: Optional[float] = None,
+    extra: Optional[dict[str, Any]] = None,
+) -> None:
+    payload: dict[str, Any] = {"status": status}
+    if score is not None:
+        payload["score"] = float(score)
+    if extra:
+        payload.update(extra)
+    _atomic_write_text(
+        Path(artifact_dir) / DONE_FILENAME,
+        json.dumps(payload, indent=2, sort_keys=True),
+    )
+    resume_path = Path(artifact_dir) / RESUME_FILENAME
+    if resume_path.exists():
+        resume_path.unlink(missing_ok=True)
+
+
+def is_trial_incomplete(artifact_dir: Path) -> bool:
+    artifact_dir = Path(artifact_dir)
+    if (artifact_dir / DONE_FILENAME).exists():
+        return False
+    return (
+        (artifact_dir / RESUME_FILENAME).exists()
+        or (artifact_dir / RESULT_FILENAME).exists()
+        or (artifact_dir / PARAMS_FILENAME).exists()
+    )
+
+
+def _save_training_resume(
+    artifact_dir: Path,
+    *,
+    last_epoch: int,
+    model: nn.Module,
+    optimizer,
+    scheduler,
+    history: list[dict],
+    best_score: float,
+    best_epoch: int,
+    best_output: str,
+    best_state: Optional[dict],
+    stale: int,
+    hparams: PairAwareHParams,
+    trial_number: Optional[int],
+    params: Optional[dict],
+) -> None:
+    payload = {
+        "version": RESUME_VERSION,
+        "last_epoch": int(last_epoch),
+        "model_state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "history": list(history),
+        "best_score": float(best_score),
+        "best_epoch": int(best_epoch),
+        "best_output": str(best_output),
+        "best_state": best_state,
+        "stale": int(stale),
+        "hparams": asdict(hparams),
+        "trial_number": None if trial_number is None else int(trial_number),
+        "params": None if params is None else dict(params),
+    }
+    _atomic_torch_save(payload, Path(artifact_dir) / RESUME_FILENAME)
 
 
 def flag_class_index(num_classes: int) -> int:
@@ -911,6 +1020,22 @@ def run_pair_aware_training(
     inactive_pos_weight = compute_inactive_gate_pos_weight(train_loader, inactive_gate_pos_weight_mode, device, target_mask_attr, num_classes)
 
     trial_label = None if trial is None else int(trial.number)
+    artifact_dir = Path(output_dir)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    trial_params = None if trial is None else dict(getattr(trial, "params", {}) or {})
+
+    # If a previous run already finished training but Optuna tell did not land, reuse it.
+    pending_result_path = artifact_dir / RESULT_FILENAME
+    if pending_result_path.exists() and not (artifact_dir / DONE_FILENAME).exists():
+        pending = json.loads(pending_result_path.read_text(encoding="utf-8"))
+        logger.info(
+            "Reusing finished training result for %s (best_epoch=%s score=%s)",
+            artifact_dir.name,
+            pending.get("best_epoch"),
+            pending.get("best_validation_score"),
+        )
+        return pending
+
     if trial_label is None:
         # Standalone / final-eval style: log full setup once.
         logger.info("Device: %s | num_classes=%d", device, num_classes)
@@ -944,8 +1069,43 @@ def run_pair_aware_training(
     total_epochs = int(fixed_epochs) if fixed_epochs is not None else int(epochs)
     stopped_early = False
     pruned = False
+    start_epoch = 1
 
-    for epoch in range(1, total_epochs + 1):
+    resume_path = artifact_dir / RESUME_FILENAME
+    if resume_path.exists() and not (artifact_dir / DONE_FILENAME).exists():
+        resume = torch.load(resume_path, map_location="cpu", weights_only=False)
+        if int(resume.get("version", 0)) != RESUME_VERSION:
+            logger.warning("Ignoring incompatible resume checkpoint at %s", resume_path)
+        else:
+            model.load_state_dict(resume["model_state_dict"])
+            optimizer.load_state_dict(resume["optimizer_state_dict"])
+            scheduler.load_state_dict(resume["scheduler_state_dict"])
+            history = list(resume.get("history") or [])
+            best_score = float(resume.get("best_score", -float("inf")))
+            best_epoch = int(resume.get("best_epoch", 0))
+            best_output = str(resume.get("best_output") or best_output)
+            best_state = resume.get("best_state")
+            stale = int(resume.get("stale", 0))
+            start_epoch = int(resume.get("last_epoch", 0)) + 1
+            if trial_params is None and resume.get("params"):
+                trial_params = dict(resume["params"])
+            logger.info(
+                "Resuming %s from epoch %d/%d (best_epoch=%d best_val=%.4f)",
+                artifact_dir.name,
+                start_epoch,
+                total_epochs,
+                best_epoch,
+                best_score if best_score != -float("inf") else float("nan"),
+            )
+
+    if start_epoch > total_epochs:
+        logger.info(
+            "Resume already past last epoch (%d > %d); finalizing from checkpoint",
+            start_epoch,
+            total_epochs,
+        )
+
+    for epoch in range(start_epoch, total_epochs + 1):
         train_result = _run_epoch(
             model=model,
             loader=train_loader,
@@ -1027,9 +1187,30 @@ def run_pair_aware_training(
             )
             history.append(row)
 
-            if trial is not None:
-                trial.report(score, step=epoch)
-                if trial.should_prune():
+            _save_training_resume(
+                artifact_dir,
+                last_epoch=epoch,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                history=history,
+                best_score=best_score,
+                best_epoch=best_epoch,
+                best_output=best_output,
+                best_state=best_state,
+                stale=stale,
+                hparams=hparams,
+                trial_number=trial_label,
+                params=trial_params,
+            )
+
+            if trial is not None and hasattr(trial, "report") and hasattr(trial, "should_prune"):
+                try:
+                    trial.report(score, step=epoch)
+                    should_prune = bool(trial.should_prune())
+                except Exception:
+                    should_prune = False
+                if should_prune:
                     import optuna
 
                     pruned = True
@@ -1038,6 +1219,12 @@ def run_pair_aware_training(
                         trial_label,
                         epoch,
                         score,
+                    )
+                    mark_trial_done(
+                        artifact_dir,
+                        status="pruned",
+                        score=float(score),
+                        extra={"epoch": int(epoch)},
                     )
                     raise optuna.TrialPruned()
 
@@ -1060,6 +1247,22 @@ def run_pair_aware_training(
                 train_result["loss"]["total"],
             )
             history.append(row)
+            _save_training_resume(
+                artifact_dir,
+                last_epoch=epoch,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                history=history,
+                best_score=best_score,
+                best_epoch=best_epoch,
+                best_output=best_output,
+                best_state=best_state,
+                stale=stale,
+                hparams=hparams,
+                trial_number=trial_label,
+                params=trial_params,
+            )
 
     if validation_loader is not None and fixed_epochs is None:
         if best_state is None:
@@ -1080,8 +1283,6 @@ def run_pair_aware_training(
             " | early_stop" if stopped_early else "",
         )
 
-    artifact_dir = Path(output_dir)
-    artifact_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(history).to_csv(artifact_dir / "history.csv", index=False)
     torch.save(model.state_dict(), artifact_dir / "model_state.pt")
     (artifact_dir / "model_metadata.json").write_text(
@@ -1114,6 +1315,8 @@ def run_pair_aware_training(
         "best_validation_score": None if best_score == -float("inf") else float(best_score),
         "model_state_path": str(artifact_dir / "model_state.pt"),
     }
+    # Persist finished score so a crash between training and Optuna tell can still report.
+    _atomic_write_text(artifact_dir / RESULT_FILENAME, json.dumps(result, indent=2, default=str))
     if test_loader is not None:
         test_result = _run_epoch(
             model=model,
