@@ -42,14 +42,14 @@ model:
   num_classes: 6
 
 training:
-  epochs: 100
-  patience: 12
+  epochs: 120
+  patience: 15
   batch_size: 16
   split_mode: operating_point
   seed: 42
   training: 0.7142857143
   validation: 0.1428571429
-  testing: 0.1428571429 
+  testing: 0.1428571429
 
   # Fixed loss construction and output-decoding settings.
   pair_aware:
@@ -70,15 +70,15 @@ training:
       within_one_weight: 0.10
 
 optuna:
-  n_trials: 15
+  n_trials: 30
   study_name: nordic
   hparams:
     hidden_dim:
       type: categorical
-      choices: [128, 256]
+      choices: [64, 128, 256]
     node_id_dim:
       type: categorical
-      choices: [16, 24, 32]
+      choices: [24, 32, 48]
     contingency_id_dim:
       type: categorical
       choices: [16, 32, 64]
@@ -90,24 +90,24 @@ optuna:
       choices: [8, 16, 32]
     num_gnn_layers:
       type: int
-      low: 3
-      high: 5
+      low: 4
+      high: 6
     decoder_hidden_dim:
       type: categorical
       choices: [128, 256, 512]
     dropout:
       type: float
       low: 0.02
-      high: 0.25
+      high: 0.15
     lr:
       type: float
-      low: 0.00001
-      high: 0.0015
+      low: 0.00005
+      high: 0.001
       log: true
     weight_decay:
       type: float
       low: 0.0000001
-      high: 0.001
+      high: 0.0001
       log: true
 
 inference:

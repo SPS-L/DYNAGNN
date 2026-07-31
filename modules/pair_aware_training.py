@@ -45,6 +45,79 @@ def normalize_op(value: object) -> str:
 MODEL_TYPE = "pair_aware_gine"
 
 
+def export_legacy_test_node_predictions(
+    *,
+    task: str,
+    training_dir: Path,
+    export_path: Path,
+    logger: logging.Logger,
+    node_vocab: dict[str, int] | None = None,
+    checkpoint_path: Path | None = None,
+) -> Path:
+    """Write test pred-vs-true node table: prediction, actual, difference.
+
+    Columns:
+    ``test_scenario, operating_point, contingency, component_name,
+    predicted_kpi_class, actual_kpi_class, difference``.
+    """
+    pred_csv = Path(training_dir) / task / "test_outputs" / "test_predictions.csv"
+    if not pred_csv.exists():
+        raise FileNotFoundError(f"Missing {pred_csv}")
+
+    preds = pd.read_csv(pred_csv)
+    required = {"operating_point", "contingency", "node_token", "true_class"}
+    missing = required.difference(preds.columns)
+    if missing:
+        raise KeyError(f"{pred_csv.name} missing columns: {sorted(missing)}")
+
+    if "selected_prediction" in preds.columns:
+        pred_col = "selected_prediction"
+    elif "class_prediction" in preds.columns:
+        pred_col = "class_prediction"
+    else:
+        raise KeyError(
+            f"{pred_csv.name} has neither selected_prediction nor class_prediction"
+        )
+
+    vocab = node_vocab
+    if vocab is None:
+        if checkpoint_path is None or not Path(checkpoint_path).exists():
+            raise FileNotFoundError(
+                "Need node_vocab or an existing checkpoint_path to resolve component names"
+            )
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        vocab = checkpoint.get("node_vocab") or {}
+
+    token_to_name = {int(token): str(name) for name, token in vocab.items()}
+    op = preds["operating_point"].astype(str)
+    contingency = preds["contingency"].astype(str)
+    scenario_codes, _ = pd.factorize(op + "\0" + contingency, sort=False)
+    tokens = preds["node_token"].astype(int)
+    actual = preds["true_class"].astype(int)
+    predicted = preds[pred_col].astype(int)
+    component_name = tokens.map(token_to_name)
+    component_name = component_name.where(
+        component_name.notna(), "token_" + tokens.astype(str)
+    )
+
+    export_df = pd.DataFrame(
+        {
+            "test_scenario": scenario_codes + 1,
+            "operating_point": op,
+            "contingency": contingency,
+            "component_name": component_name,
+            "predicted_kpi_class": predicted,
+            "actual_kpi_class": actual,
+            "difference": predicted - actual,
+        }
+    )
+    export_path = Path(export_path)
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    export_df.to_csv(export_path, index=False)
+    logger.info("Saved pred-vs-true node table: %s (rows=%d)", export_path, len(export_df))
+    return export_path
+
+
 def _first_existing(paths: Sequence[Path], label: str) -> Path:
     for path in paths:
         if path.exists():
@@ -787,6 +860,23 @@ def run_task_training(
         best_trial.number,
         selected_output,
     )
+
+    legacy_export_path = None
+    try:
+        test_outputs_export = (
+            Path(training_dir) / task / "test_outputs" / "test_pred_vs_true_node_table.csv"
+        )
+        legacy_export_path = export_legacy_test_node_predictions(
+            task=task,
+            training_dir=training_dir,
+            export_path=test_outputs_export,
+            logger=logger,
+            node_vocab=attachment.get("node_vocab"),
+            checkpoint_path=checkpoint_path,
+        )
+    except (FileNotFoundError, KeyError) as exc:
+        logger.warning("Skip pred-vs-true node table export: %s", exc)
+
     return {
         "best_trial": int(best_trial.number),
         "best_validation_score": float(best_trial.value),
@@ -796,6 +886,7 @@ def run_task_training(
         "checkpoint": str(checkpoint_path),
         "final_retrain_path": str(state_path),
         "test": test_result,
+        "test_pred_vs_true_node_table": str(legacy_export_path) if legacy_export_path else None,
         "log_kpi_mean": log_mean,
         "log_kpi_std": log_std,
     }
