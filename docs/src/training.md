@@ -85,14 +85,14 @@ Tunable capacity and optimizer settings only:
 
 Voltage and Spower each get an independent Optuna study named `<study_name>__pair_aware_<task>` (e.g. `nordic_v1__pair_aware_voltage`). Artifacts are stored under `data/training/<study_name>/<task>/` and `data/model/<study_name>/`.
 
-Each task runs until its study has **`optuna.n_trials` COMPLETE** trials. Re-entering the training stage does **not** blindly add another `n_trials` on top of an already-finished study; incomplete on-disk trials are finished first (mid-epoch resume).
+Each task uses Optuna `study.optimize(objective, n_trials=...)` (pruned trials count toward `n_trials`). Re-entering the training stage first finishes any incomplete on-disk `trial_*` from mid-epoch `resume.pt`, then asks only for the remaining trials so the study does not grow by another full `n_trials`.
 
 ## Mid-trial Optuna resume
 
 Training is single-process (no parallel Optuna workers). After every epoch, each active trial writes `data/training/<study_name>/<task>/optuna_trials/trial_N/resume.pt` (model, optimizer, scheduler, history, best validation state). On restart of the same task:
 
-1. Incomplete `trial_*` folders (with `resume.pt` / `params.json` / unfinished `result.json`) are continued from the next epoch.
-2. Then new trials are asked until `COMPLETE >= n_trials`.
+1. Incomplete `trial_*` folders with `resume.pt` continue the **same** Optuna trial number from the next epoch (not a new trial).
+2. Then `study.optimize` asks for the remaining trials until the study has `n_trials` total (Optuna semantics; pruned counts).
 3. Voltage and Spower keep separate SQLite DBs and trial trees, so resume is **per task**.
 
 Example: Voltage already complete; Spower killed at trial 3 / epoch 23 → Spower resumes trial 3 from epoch 24; Voltage is left alone.

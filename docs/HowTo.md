@@ -87,7 +87,7 @@ Example (for **bus**, use **Type** `bus` in both cases; **Fault name** is a `bus
 | | `validation` | float | Validation fraction or OP count |
 | | `testing` | float | Test fraction or OP count |
 | | `pair_aware.*` | see below | Fixed loss / decoding settings (not Optuna-tuned) |
-| **optuna** | `n_trials` | integer | Target **COMPLETE** trials per task (Voltage and Spower are independent; restarts finish incomplete trials then stop at this count) |
+| **optuna** | `n_trials` | integer | Passed to Optuna `study.optimize(..., n_trials=...)` (pruned trials count). On restart, only the remaining trials are asked after mid-epoch `resume.pt` is finished |
 | | `study_name` | string (**required**) | Folder name for `data/training/<study_name>/` and `data/model/<study_name>/` |
 | | `hparams.*` | see `config.yaml` | Search spaces for model capacity + optimizer |
 | **inference** | `initialization_duration` | float (s), or `0` / omit | Steady-state run for `DYNAGNN.py` |

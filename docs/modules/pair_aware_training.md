@@ -48,7 +48,7 @@ Repository integration for pair-aware GINE training: attach shared identity/even
 
 1. Read `num_classes` from `config["model"]["num_classes"]` (must be >= 2); validate `len(cuts) == num_classes - 2`.
 2. Bind task-specific label / log-KPI / mask attributes; fit train-only log-KPI mean/std using activity classes only (labels `< num_classes - 1`).
-3. Run Optuna until the study has **`optuna.n_trials` COMPLETE** trials (not “add N more” on every restart). Prefer finishing any incomplete on-disk `trial_*` (mid-epoch `resume.pt`) before asking new trials.
+3. Run Optuna via `study.optimize(..., n_trials=...)` (pruned counts). Prefer finishing any incomplete on-disk `trial_*` (mid-epoch `resume.pt`) before asking the remaining trials.
 4. Sample Optuna hparams from `optuna.hparams` (capacity + optimizer only) for each new trial.
 5. Train with fixed `training.pair_aware` loss weights; maximize validation selection score (`training.pair_aware.selection_score`).
 6. Retrain the best hparams on **train+val** for the winning trial’s `best_epoch` epochs (no validation early stopping).
@@ -62,7 +62,7 @@ DYNAGNN trains Optuna **serially** (no parallel workers). If the process is kill
 
 1. Re-run the same training stage (`main.py` with `--from-step training`, or a full pipeline that reaches training).
 2. The interrupted task loads `optuna_trials/trial_N/resume.pt` and continues from the next epoch.
-3. Already-COMPLETE trials in that task’s SQLite study are kept; the loop stops when `COMPLETE >= n_trials`.
+3. Already-finished trials in that task’s SQLite study are kept; `optimize` is called with `remaining = n_trials - len(study.trials)`.
 
 No extra CLI flag is required. Pipeline `--from-step` / `--to-step` still control **which stages** run; mid-trial resume applies **inside** the training stage per task.
 

@@ -222,7 +222,7 @@ The bundled Nordic example ships **35** operating points (`operating_point_1` �
 | `data/training/<study_name>/<task>/optuna_trials/trial_N/` | Per-trial history/weights plus mid-trial `resume.pt` / `params.json` (crash → continue from next epoch; **per task**) |
 | `data/training/<study_name>/<task>/plots/` | Diagnostics from `modules/training_plots.py`: multi-subplot `loss_curve.png` + `score_curve.png` from the best Optuna trial; confusion / distance / node examples from the final train+val test eval |
 
-**Mid-trial Optuna resume:** training is single-process. After each epoch, `resume.pt` is written under the active `trial_N/` (and under `final_retrain/` during the train+val retrain). On restart, incomplete trials are finished before new ones are asked; the study stops at `optuna.n_trials` COMPLETE trials. Voltage and Spower resume independently. See [`pair_aware_training.md`](modules/pair_aware_training.md#mid-trial-resume).
+**Mid-trial Optuna resume:** training is single-process. After each epoch, `resume.pt` is written under the active `trial_N/` (and under `final_retrain/` during the train+val retrain). On restart, incomplete trials are finished from the next epoch, then Optuna `optimize` asks only for remaining trials up to `n_trials`. Voltage and Spower resume independently. See [`pair_aware_training.md`](modules/pair_aware_training.md#mid-trial-resume).
 
 **Removed from the active stack:** GAT-CORAL training/decoding modules, `gat_*_best_model.pt` naming, CORAL Optuna knobs (`under_penalty_lambda`, `coral_prediction_threshold`, …), and high-class selection weights (`high_class_threshold`, `selection_f1_weight`, `selection_loss_weight`).
 
